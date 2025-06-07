@@ -13,8 +13,7 @@ const __dirname = path.dirname(__filename);
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.modify',
-  'https://www.googleapis.com/auth/gmail.labels',
-  'https://www.googleapis.com/auth/gmail.metadata'
+  'https://www.googleapis.com/auth/gmail.labels'
 ];
 
 const TOKEN_PATH = path.join(__dirname, '../../token.json');
@@ -31,10 +30,16 @@ export class AuthManager {
       const credentials = await this.loadCredentials();
       const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
       
+      // Fix redirect URI if it's missing the callback path
+      let redirectUri = redirect_uris[0];
+      if (redirectUri === 'http://localhost') {
+        redirectUri = 'http://localhost:3000/oauth2callback';
+      }
+      
       this.oAuth2Client = new google.auth.OAuth2(
         client_id,
         client_secret,
-        redirect_uris[0]
+        redirectUri
       );
 
       // Try to load existing token
@@ -78,27 +83,32 @@ export class AuthManager {
   }
 
   async hasValidAuth(): Promise<boolean> {
-    if (!this.oAuth2Client) {
-      await this.initialize();
-    }
+    try {
+      if (!this.oAuth2Client) {
+        await this.initialize();
+      }
 
-    const credentials = this.oAuth2Client!.credentials;
-    if (!credentials || !credentials.access_token) {
-      return false;
-    }
-
-    // Check if token is expired
-    if (credentials.expiry_date && credentials.expiry_date <= Date.now()) {
-      try {
-        await this.refreshToken();
-        return true;
-      } catch (error) {
-        logger.error('Failed to refresh token:', error);
+      const credentials = this.oAuth2Client!.credentials;
+      if (!credentials || !credentials.access_token) {
         return false;
       }
-    }
 
-    return true;
+      // Check if token is expired
+      if (credentials.expiry_date && credentials.expiry_date <= Date.now()) {
+        try {
+          await this.refreshToken();
+          return true;
+        } catch (error) {
+          logger.error('Failed to refresh token:', error);
+          return false;
+        }
+      }
+
+      return true;
+    } catch (error) {
+      logger.debug('Auth validation failed:', error);
+      return false;
+    }
   }
 
   async refreshToken(): Promise<void> {

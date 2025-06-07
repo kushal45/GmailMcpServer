@@ -49,7 +49,7 @@ export class GmailMcpServer {
     this.databaseManager = new DatabaseManager();
     this.cacheManager = new CacheManager();
     this.authManager = new AuthManager();
-    this.emailFetcher = new EmailFetcher(this.authManager, this.cacheManager);
+    this.emailFetcher = new EmailFetcher(this.authManager, this.cacheManager,this.databaseManager);
     this.categorizationEngine = new CategorizationEngine(this.databaseManager, this.cacheManager);
     this.searchEngine = new SearchEngine(this.databaseManager, this.emailFetcher);
     this.archiveManager = new ArchiveManager(this.authManager, this.databaseManager);
@@ -60,13 +60,21 @@ export class GmailMcpServer {
   }
 
   private setupHandlers() {
+    // The MCP SDK handles the initialize request automatically
+    // We just need to handle tools listing and tool calls
+    
     // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: toolDefinitions,
-    }));
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      console.error('[DEBUG] Handling list tools request');
+      return {
+        tools: toolDefinitions,
+      };
+    });
 
     // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      console.error('[DEBUG] Handling tool call:', request.params.name);
+      console.error('[DEBUG] Tool arguments:', request.params.arguments);
       try {
         const result = await handleToolCall(
           request.params.name,
@@ -124,15 +132,16 @@ export class GmailMcpServer {
       logger.info('Database initialized');
 
       // Initialize cache
-      await this.cacheManager.initialize();
+      //await this.cacheManager.initialize();
       logger.info('Cache initialized');
 
-      // Check for existing auth
-      const hasAuth = await this.authManager.hasValidAuth();
-      if (hasAuth) {
-        logger.info('Found existing authentication');
-      } else {
-        logger.info('No existing authentication found - user will need to authenticate');
+      // Initialize auth manager (but don't check for valid auth yet)
+      try {
+        await this.authManager.initialize();
+        logger.info('Auth manager initialized');
+      } catch (error) {
+        logger.warn('Auth manager initialization failed - credentials may be missing:', error);
+        // Continue without auth - user will need to authenticate
       }
     } catch (error) {
       logger.error('Failed to initialize server:', error);

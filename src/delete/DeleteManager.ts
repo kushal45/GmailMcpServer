@@ -14,7 +14,6 @@ export class DeleteManager {
 
   async deleteEmails(options: DeleteOptions): Promise<{ deleted: number, errors: string[] }> {
     logger.info('Starting email deletion', { options });
-
     try {
       // Get emails to delete based on criteria
       const emails = await this.getEmailsToDelete(options);
@@ -46,8 +45,9 @@ export class DeleteManager {
       });
 
       return result;
-    } catch (error) {
-      logger.error('Delete error:', error);
+    } catch (error: unknown) {
+      console.error('Error during email deletion:', (error as Error).message, { stack: (error as Error).stack });
+      logger.error('Delete error:', (error as Error).message, { stack: (error as Error).stack });
       throw error;
     }
   }
@@ -97,8 +97,10 @@ export class DeleteManager {
       const batch = emails.slice(i, i + batchSize);
       
       try {
+        logger.info("emails to delete", { count: batch.length, ids: batch.map(e => e.id) });
+        logger.info(`Deleting batch ${Math.floor(i / batchSize) + 1}`, { count: batch.length });
         // Move to trash first (safer than permanent delete)
-        await gmail.users.messages.batchModify({
+       const response = await gmail.users.messages.batchModify({
           userId: 'me',
           requestBody: {
             ids: batch.map(e => e.id),
@@ -106,6 +108,7 @@ export class DeleteManager {
             removeLabelIds: ['INBOX', 'UNREAD']
           }
         });
+        logger.info('Batch delete response', { response });
 
         deleted += batch.length;
         

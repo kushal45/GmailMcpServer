@@ -14,7 +14,8 @@ export class DatabaseManager {
   private dbPath: string;
 
   constructor() {
-    const storagePath = process.env.STORAGE_PATH || './data';
+    // Always resolve storage path relative to project root, not cwd or absolute
+    const storagePath = path.join(__dirname, '../../', process.env.STORAGE_PATH || 'data');
     this.dbPath = path.join(storagePath, 'gmail-mcp.db');
   }
 
@@ -129,10 +130,29 @@ export class DatabaseManager {
   // Promisified database methods
   private run(sql: string, params: any[] = []): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.db!.run(sql, params, function(err) {
-        if (err) reject(err);
-        else resolve();
-      });
+      // If params is a 2D array, treat as multiple runs in a transaction
+      if (Array.isArray(params[0])) {
+        this.db!.serialize(() => {
+          this.db!.run('BEGIN TRANSACTION');
+          for (const paramSet of params) {
+            this.db!.run(sql, paramSet, function(err) {
+              if (err) {
+                reject(err);
+              }
+            });
+          }
+          this.db!.run('COMMIT', (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+      } else {
+        // Single run
+        this.db!.run(sql, params, function(err) {
+          if (err) reject(err);
+          else resolve();
+        });
+      }
     });
   }
 
@@ -181,6 +201,34 @@ export class DatabaseManager {
       email.archiveDate?.getTime() || null,
       email.archiveLocation || null
     ]);
+  }
+
+  async bulkUpsertEmailIndex(emails: EmailIndex[]): Promise<void> {
+    const sql = `
+      INSERT OR REPLACE INTO email_index (
+        id, thread_id, category, subject, sender, recipients,
+        date, year, size, has_attachments, labels, snippet,
+        archived, archive_date, archive_location, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+    `;
+    const paramSets = emails.map(email => [
+      email.id,
+      email.threadId,
+      email.category,
+      email.subject,
+      email.sender,
+      JSON.stringify(email.recipients),
+      email.date.getTime(),
+      email.year,
+      email.size,
+      email.hasAttachments ? 1 : 0,
+      JSON.stringify(email.labels),
+      email.snippet,
+      email.archived ? 1 : 0,
+      email.archiveDate?.getTime() || null,
+      email.archiveLocation || null
+    ]);
+    await this.run(sql, paramSets);
   }
 
   async getEmailIndex(id: string): Promise<EmailIndex | null> {

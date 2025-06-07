@@ -75,7 +75,8 @@ export async function handleToolCall(
     if (error instanceof McpError) {
       throw error;
     }
-    logger.error(`Error in tool ${toolName}:`, error);
+    console.error(`Unhandled error in tool ${toolName}:`, (error as Error).message, (error as Error).stack);
+    logger.error(`Error in tool ${toolName}:`, (error as Error).message);
     throw new McpError(
       ErrorCode.InternalError,
       `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
@@ -150,7 +151,7 @@ async function handleCategorizeEmails(args: any, context: ToolContext) {
   if (!await context.authManager.hasValidAuth()) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
-
+  logger.info('Categorizing emails with args:', JSON.stringify(args, null, 2));
   const result = await context.categorizationEngine.categorizeEmails({
     forceRefresh: args.force_refresh || false,
     year: args.year

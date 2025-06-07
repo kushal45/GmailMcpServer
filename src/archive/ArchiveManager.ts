@@ -17,6 +17,7 @@ export class ArchiveManager {
   constructor(authManager: AuthManager, databaseManager: DatabaseManager) {
     this.authManager = authManager;
     this.databaseManager = databaseManager;
+    // Use absolute path based on project root
     this.archivePath = process.env.ARCHIVE_PATH || path.join(__dirname, '../../archives');
   }
 
