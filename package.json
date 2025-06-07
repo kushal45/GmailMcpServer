@@ -1,0 +1,36 @@
+{
+  "name": "gmail-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for Gmail integration with email categorization, search, archive, and delete capabilities",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "gmail-mcp-server": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "dev": "tsx watch src/index.ts",
+    "start": "node build/index.js",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "googleapis": "^144.0.0",
+    "sqlite3": "^5.1.7",
+    "dotenv": "^16.4.5",
+    "node-cache": "^5.1.2",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/sqlite3": "^3.1.11",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.1"
+  }
+}
