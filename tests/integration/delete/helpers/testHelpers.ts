@@ -1,9 +1,13 @@
 import { jest } from '@jest/globals';
-import { gmail_v1 } from 'googleapis';
 import { EmailIndex, DeleteOptions } from '../../../../src/types/index.js';
 import { AuthManager } from '../../../../src/auth/AuthManager.js';
 import { DatabaseManager } from '../../../../src/database/DatabaseManager.js';
 import { DeleteManager } from '../../../../src/delete/DeleteManager.js';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+import { logger } from '../../../../build/utils/logger.js';
+import { Logger } from 'winston';
 
 // Mock Gmail client type
 export type MockGmailClient = {
@@ -14,6 +18,17 @@ export type MockGmailClient = {
       delete: jest.Mock<any>;
     };
   };
+};
+
+export type MockDatabaseManager = {
+  searchEmails: jest.Mock<any>;
+  getEmailById: jest.Mock<any>;
+  saveEmail: jest.Mock<any>;
+  updateEmail: jest.Mock<any>;
+  deleteEmail: jest.Mock<any>;
+  getEmailCount: jest.Mock<any>;
+  getEmailStatistics: jest.Mock<any>;
+  close: jest.Mock<any>;
 };
 
 // Create mock Gmail client
@@ -43,9 +58,87 @@ export function createMockAuthManager(gmailClient: MockGmailClient): any {
   return mockAuthManager;
 }
 
-// Create mock DatabaseManager
-export function createMockDatabaseManager(): any {
-  const mockDbManager = {
+// Test database path
+let testDbPath: string;
+let testDbDir: string;
+
+// Create real DatabaseManager for testing
+export async function createTestDatabaseManager(): Promise<DatabaseManager> {
+  // Create a unique test database in temp directory
+  testDbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gmail-test-'));
+  testDbPath = path.join(testDbDir, 'test-emails.db');
+  
+  // Set the storage path environment variable to our test directory
+  process.env.STORAGE_PATH = testDbDir;
+  
+  const dbManager = new DatabaseManager();
+  await dbManager.initialize();
+  
+  return dbManager;
+}
+
+// Cleanup test database
+export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<void> {
+  if (dbManager) {
+    await dbManager.close();
+  }
+  
+  // Remove test database directory
+  if (testDbDir) {
+    try {
+      await fs.rm(testDbDir, { recursive: true, force: true });
+    } catch (error) {
+      console.error('Failed to cleanup test database:', error);
+    }
+  }
+}
+
+// Seed test data into database
+export async function seedTestData(dbManager: DatabaseManager, emails: EmailIndex[]): Promise<void> {
+  // Use bulk insert for efficiency
+  if (emails.length > 0) {
+    await dbManager.bulkUpsertEmailIndex(emails);
+  }
+}
+
+// Verify database state
+export async function verifyDatabaseState(
+  dbManager: DatabaseManager,
+  expectedEmails: EmailIndex[]
+): Promise<void> {
+  const allEmails = await dbManager.searchEmails({});
+  
+  // Create a map for easy lookup
+  const emailMap = new Map(allEmails.map(e => [e.id, e]));
+  
+  expectedEmails.forEach(expected => {
+    const actual = emailMap.get(expected.id);
+    expect(actual).toBeDefined();
+    if (actual) {
+      expect(actual.archived).toBe(expected.archived);
+      expect(actual.category).toBe(expected.category);
+    }
+  });
+}
+
+// Get emails from database by IDs
+export async function getEmailsFromDatabase(
+  dbManager: DatabaseManager,
+  emailIds: string[]
+): Promise<EmailIndex[]> {
+  const emails: EmailIndex[] = [];
+  for (const id of emailIds) {
+    const email = await dbManager.getEmailIndex(id);
+    if (email) {
+      emails.push(email);
+    }
+  }
+  return emails;
+}
+
+// Create mock DatabaseManager (kept for compatibility but deprecated)
+export function createMockDatabaseManager(): MockDatabaseManager {
+  const mockDbManager: MockDatabaseManager = {
     searchEmails: jest.fn(),
     getEmailById: jest.fn(),
     saveEmail: jest.fn(),
@@ -59,7 +152,33 @@ export function createMockDatabaseManager(): any {
   return mockDbManager;
 }
 
-// Create DeleteManager with mocks
+// Create DeleteManager with real database
+export async function createDeleteManagerWithRealDb(
+  authManager?: any
+): Promise<{
+  deleteManager: DeleteManager;
+  mockGmailClient: MockGmailClient;
+  mockAuthManager: any;
+  dbManager: DatabaseManager;
+}> {
+  const mockGmailClient = createMockGmailClient();
+  const mockAuthManager = authManager || createMockAuthManager(mockGmailClient);
+  const dbManager = await createTestDatabaseManager();
+
+  const deleteManager = new DeleteManager(
+    mockAuthManager as unknown as AuthManager,
+    dbManager
+  );
+
+  return {
+    deleteManager,
+    mockGmailClient,
+    mockAuthManager,
+    dbManager
+  };
+}
+
+// Create DeleteManager with mocks (kept for backward compatibility)
 export function createDeleteManager(
   authManager?: any,
   databaseManager?: any
@@ -191,17 +310,17 @@ export function createDeleteOptions(overrides?: Partial<DeleteOptions>): DeleteO
   };
 }
 
-// Helper to setup database search results
+// Helper to setup database search results (kept for mock compatibility)
 export function setupDatabaseSearchResults(mockDbManager: any, emails: EmailIndex[]) {
   mockDbManager.searchEmails.mockResolvedValue(emails);
 }
 
-// Helper to setup database search failure
+// Helper to setup database search failure (kept for mock compatibility)
 export function setupDatabaseSearchFailure(mockDbManager: any, error: Error) {
   mockDbManager.searchEmails.mockRejectedValue(error);
 }
 
-// Helper to verify database search calls
+// Helper to verify database search calls (kept for mock compatibility)
 export function verifyDatabaseSearchCalls(
   mockDbManager: any,
   expectedCriteria: any[]
@@ -211,6 +330,33 @@ export function verifyDatabaseSearchCalls(
   expectedCriteria.forEach((criteria, index) => {
     expect(mockDbManager.searchEmails).toHaveBeenNthCalledWith(index + 1, criteria);
   });
+}
+
+// Helper to verify real database search results
+export async function verifyRealDatabaseSearch(
+  dbManager: DatabaseManager,
+  criteria: any,
+  expectedCount: number
+): Promise<EmailIndex[]> {
+  const results = await dbManager.searchEmails(criteria);
+  expect(results.length).toBe(expectedCount);
+  return results;
+}
+
+// Helper to mark emails as deleted in real database
+export async function markEmailsAsDeleted(
+  dbManager: DatabaseManager,
+  emailIds: string[]
+): Promise<void> {
+  for (const id of emailIds) {
+    const email = await dbManager.getEmailIndex(id);
+    if (email) {
+      email.archived = true;
+      email.archiveDate = new Date();
+      email.archiveLocation = 'trash';
+      await dbManager.upsertEmailIndex(email);
+    }
+  }
 }
 
 // Helper to create various error scenarios
@@ -229,34 +375,82 @@ export function waitForAsync(ms: number = 0): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Helper to capture console logs
-export function captureConsoleLogs(): {
+
+
+interface CapturedConsoleOutput {
   logs: string[];
   errors: string[];
-  restore: () => void;
-} {
-  const logs: string[] = [];
-  const errors: string[] = [];
-  
-  const originalLog = console.log;
-  const originalError = console.error;
-  
-  console.log = (...args: any[]) => {
-    logs.push(args.join(' '));
+  warns: string[];
+  infos: string[];
+}
+
+const capturedOutput: CapturedConsoleOutput = {
+  logs: [],
+  errors: [],
+  warns: [],
+  infos: []
+};
+// Stores the captured output across tests
+// This should be cleared and reset for each test
+type LoggerMethodName = 'log' | 'warn' | 'error' | 'info'; // Assuming these are the methods you use
+const loggerSpies: { [key in LoggerMethodName]?: any } = {}; // Changed to loggerSpies
+
+/**
+ * Starts capturing Winston logger outputs (log, error, warn, info) using Jest spies.
+ * Clears any previously captured logs.
+ *
+ * @param loggerInstance The Winston logger instance to spy on.
+ * @returns An object containing arrays for logs, errors, warns, and infos.
+ */
+export function startLoggerCapture(loggerInstance: Logger): CapturedConsoleOutput {
+   // Clear previous captures before starting
+  capturedOutput.logs = [];
+  capturedOutput.errors = [];
+  capturedOutput.warns = [];
+  capturedOutput.infos = [];
+
+ const formatArgs = (...args: any[]): string => {
+    return args.map(arg => {
+      if (typeof arg === 'object' && arg !== null) {
+        try {
+          return JSON.stringify(arg);
+        } catch (e) {
+          return String(arg);
+        }
+      }
+      return String(arg);
+    }).join(' ');
   };
-  
-  console.error = (...args: any[]) => {
-    errors.push(args.join(' '));
-  };
-  
-  return {
-    logs,
-    errors,
-    restore: () => {
-      console.log = originalLog;
-      console.error = originalError;
-    }
-  };
+
+  loggerSpies.log = jest.spyOn(loggerInstance, 'log').mockImplementation((...args: any[]) => {
+    capturedOutput.logs.push(formatArgs(...args));
+    return loggerInstance; // <-- ADD THIS LINE
+  });
+  loggerSpies.error = jest.spyOn(loggerInstance, 'error').mockImplementation((...args: any[]) => {
+    capturedOutput.errors.push(formatArgs(...args));
+    return loggerInstance; // <-- ADD THIS LINE
+  });
+  loggerSpies.warn = jest.spyOn(loggerInstance, 'warn').mockImplementation((...args: any[]) => {
+    capturedOutput.warns.push(formatArgs(...args));
+    return loggerInstance; // <-- ADD THIS LINE
+  });
+  loggerSpies.info = jest.spyOn(loggerInstance, 'info').mockImplementation((...args: any[]) => {
+    capturedOutput.infos.push(formatArgs(...args));
+    return loggerInstance; // <-- ADD THIS LINE
+  });
+
+  return capturedOutput;
+}
+
+/**
+ * Restores all spied logger methods to their original implementations.
+ * This should typically be called in Jest's `afterEach` hook.
+ */
+export function stopLoggerCapture() {
+  for (const method of Object.keys(loggerSpies) as LoggerMethodName[]) {
+    loggerSpies[method]?.mockRestore();
+    delete loggerSpies[method]; // Clean up the spy reference
+  }
 }
 
 // Helper to create a delay promise
@@ -293,7 +487,7 @@ export function verifyNoUnexpectedCalls(
 export function resetAllMocks(
   mockGmailClient: MockGmailClient,
   mockAuthManager: any,
-  mockDbManager: any
+  mockDbManager?: MockDatabaseManager
 ) {
   // Reset Gmail client mocks
   mockGmailClient.users.messages.batchModify.mockReset();
@@ -306,24 +500,38 @@ export function resetAllMocks(
     mockAuthManager.isAuthenticated.mockReset();
   }
   
-  // Reset Database manager mocks
-  mockDbManager.searchEmails.mockReset();
-  if (mockDbManager.getEmailById) {
-    mockDbManager.getEmailById.mockReset();
+  // Reset Database manager mocks if provided (for mock tests)
+  if (mockDbManager) {
+    mockDbManager.searchEmails.mockReset();
+    if (mockDbManager.getEmailById) {
+      mockDbManager.getEmailById.mockReset();
+    }
+    if (mockDbManager.saveEmail) {
+      mockDbManager.saveEmail.mockReset();
+    }
+    if (mockDbManager.updateEmail) {
+      mockDbManager.updateEmail.mockReset();
+    }
+    if (mockDbManager.deleteEmail) {
+      mockDbManager.deleteEmail.mockReset();
+    }
+    if (mockDbManager.getEmailCount) {
+      mockDbManager.getEmailCount.mockReset();
+    }
+    if (mockDbManager.getEmailStatistics) {
+      mockDbManager.getEmailStatistics.mockReset();
+    }
   }
-  if (mockDbManager.saveEmail) {
-    mockDbManager.saveEmail.mockReset();
-  }
-  if (mockDbManager.updateEmail) {
-    mockDbManager.updateEmail.mockReset();
-  }
-  if (mockDbManager.deleteEmail) {
-    mockDbManager.deleteEmail.mockReset();
-  }
-  if (mockDbManager.getEmailCount) {
-    mockDbManager.getEmailCount.mockReset();
-  }
-  if (mockDbManager.getEmailStatistics) {
-    mockDbManager.getEmailStatistics.mockReset();
+}
+
+// Helper to reset test database
+export async function resetTestDatabase(dbManager: DatabaseManager, emails: EmailIndex[]): Promise<void> {
+  // Clear all existing data by closing and reinitializing
+  await dbManager.close();
+  await dbManager.initialize();
+  
+  // Re-seed with fresh data
+  if (emails.length > 0) {
+    await seedTestData(dbManager, emails);
   }
 }

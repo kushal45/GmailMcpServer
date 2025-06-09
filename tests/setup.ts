@@ -1,24 +1,33 @@
 import { jest } from '@jest/globals';
 
-// Set test environment variables
-process.env.NODE_ENV = 'test';
-process.env.LOG_LEVEL = 'error'; // Reduce log noise during tests
+// Mock import.meta.url for CommonJS compatibility in tests
+if (typeof global !== 'undefined') {
+  // @ts-ignore
+  global.__filename = __filename;
+  // @ts-ignore
+  global.__dirname = __dirname;
+}
 
-// Mock console methods to reduce noise
-global.console = {
-  ...console,
-  log: jest.fn(),
-  debug: jest.fn(),
-  info: jest.fn(),
-  warn: jest.fn(),
-  error: jest.fn(),
-};
-
-// Global test timeout
+// Increase timeout for integration tests
 jest.setTimeout(30000);
 
-// Clean up after tests
-afterAll(async () => {
-  // Close any open connections, clean up resources
-  jest.clearAllMocks();
+// Suppress console logs during tests unless explicitly needed
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+
+beforeAll(() => {
+  // Only show console output if SHOW_LOGS env var is set
+  if (!process.env.SHOW_LOGS) {
+    console.log = jest.fn();
+    console.error = jest.fn();
+    console.warn = jest.fn();
+  }
+});
+
+afterAll(() => {
+  // Restore console methods
+  console.log = originalConsoleLog;
+  console.error = originalConsoleError;
+  console.warn = originalConsoleWarn;
 });

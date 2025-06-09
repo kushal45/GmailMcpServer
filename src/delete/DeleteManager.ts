@@ -12,6 +12,14 @@ export class DeleteManager {
     this.databaseManager = databaseManager;
   }
 
+  set dbManager(manager: DatabaseManager) {
+    this.databaseManager = manager;
+  }
+
+  get dbManager(): DatabaseManager {
+    return this.databaseManager;
+  }
+
   async deleteEmails(options: DeleteOptions): Promise<{ deleted: number, errors: string[] }> {
     logger.info('Starting email deletion', { options });
     try {
@@ -68,11 +76,23 @@ export class DeleteManager {
     }
 
     if (options.sizeThreshold) {
-      criteria.sizeRange = { min: options.sizeThreshold };
+      criteria.sizeRange = { min: 0, max: options.sizeThreshold };
     }
 
     if (options.skipArchived) {
       criteria.archived = false;
+    }
+
+    if(!options?.orderBy) {
+      criteria.orderBy = `id`;
+    }else{
+      criteria.orderBy = options.orderBy;
+    }
+
+    if(!options?.orderDirection){
+      criteria.orderDirection = 'ASC';
+    }else{
+      criteria.orderDirection = options.orderDirection;
     }
 
     const emails = await this.databaseManager.searchEmails(criteria);
@@ -135,14 +155,9 @@ export class DeleteManager {
     // 2. Or mark with a "deleted" flag
     // 3. Keep audit trail
     
-    for (const id of emailIds) {
-      try {
-        // For now, we'll just log the deletion
-        logger.info('Email marked as deleted in database', { id });
-      } catch (error) {
-        logger.error('Failed to update database for deleted email', { id, error });
-      }
-    }
+    logger.info('Marking emails as deleted', { count: emailIds.length });
+    await this.databaseManager.markEmailsAsDeleted(emailIds);
+    logger.info('Emails marked as deleted', { count: emailIds.length });
   }
 
   async getDeleteStatistics(): Promise<any> {

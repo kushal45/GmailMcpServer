@@ -18,9 +18,11 @@
  *   --silent      Suppress console output during tests
  */
 
-const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
+import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+const __dirname = path.resolve();
+console.log("Current directory:", __dirname);
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -43,7 +45,7 @@ if (filterIndex !== -1 && args[filterIndex + 1]) {
 const jestArgs = [
   'jest',
   'tests/integration/delete/DeleteManager.integration.test.ts',
-  '--config', 'jest.config.js'
+  '--config', 'jest.config.cjs'
 ];
 
 // Add options
@@ -134,17 +136,12 @@ if (args.includes('--help') || args.includes('-h')) {
 async function setupTestEnvironment() {
   console.log(colors.yellow + '⚙️  Setting up test environment...' + colors.reset);
   
-  // Check if test database exists, create if needed
-  const testDbPath = path.join(__dirname, '..', 'test.db');
-  const dbExists = fs.existsSync(testDbPath);
-  
-  if (!dbExists) {
-    console.log(colors.dim + '   Creating test database...' + colors.reset);
-    // Database will be created automatically by tests
-  }
+  // Note: Test database will be created in temp directory by the tests themselves
+  console.log(colors.dim + '   Test database will be created in temp directory during test execution' + colors.reset);
   
   // Ensure test fixtures are available
-  const fixturesPath = path.join(__dirname, '..', 'tests', 'integration', 'delete', 'fixtures');
+  const fixturesPath = path.join(__dirname, 'tests', 'integration', 'delete', 'fixtures');
+  console.log(colors.dim + '   Checking test fixtures directory: ' + colors.cyan + fixturesPath + colors.reset);
   if (!fs.existsSync(fixturesPath)) {
     console.error(colors.red + '❌ Test fixtures directory not found!' + colors.reset);
     process.exit(1);
@@ -157,16 +154,9 @@ async function setupTestEnvironment() {
 async function cleanupTestEnvironment() {
   console.log('\n' + colors.yellow + '🧹 Cleaning up test environment...' + colors.reset);
   
-  // Remove test database if it exists
-  const testDbPath = path.join(__dirname, '..', 'test.db');
-  if (fs.existsSync(testDbPath)) {
-    try {
-      fs.unlinkSync(testDbPath);
-      console.log(colors.green + '✓ Test database removed' + colors.reset);
-    } catch (error) {
-      console.error(colors.red + '❌ Failed to remove test database:' + colors.reset, error.message);
-    }
-  }
+  // Note: Test databases are created in temp directories and cleaned up by the tests
+  console.log(colors.dim + '   Test databases are automatically cleaned up by the test suite' + colors.reset);
+  console.log(colors.green + '✓ Cleanup complete' + colors.reset);
 }
 
 // Run the tests

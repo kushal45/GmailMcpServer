@@ -35,5 +35,17 @@ module.exports = {
   },
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
   testTimeout: 30000,
-  verbose: true
+  verbose: true,
+  globals: {
+    'ts-jest': {
+      isolatedModules: true
+    }
+  },
+  // Mock import.meta.url for CommonJS compatibility
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1'
+  },
+  testEnvironmentOptions: {
+    customExportConditions: ['node', 'node-addons']
+  }
 };

@@ -164,6 +164,8 @@ export interface DeleteOptions {
   sizeThreshold?: number;
   skipArchived: boolean;
   dryRun: boolean;
+  orderBy?: 'date' | 'size' | 'id' ;
+  orderDirection?: 'ASC' | 'DESC';
 }
 
 export interface ExportOptions {

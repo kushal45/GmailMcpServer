@@ -1,21 +1,21 @@
 import sqlite3 from 'sqlite3';
 import { promisify } from 'util';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { logger } from '../utils/logger.js';
 import { EmailIndex, ArchiveRule, ArchiveRecord, SavedSearch } from '../types/index.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 export class DatabaseManager {
   private db: sqlite3.Database | null = null;
   private dbPath: string;
 
   constructor() {
+    // Determine the project root directory
+    // Since we know this file is in src/database, we can navigate up from there
+    const projectRoot = path.resolve(__dirname, '../../');
+    
     // Always resolve storage path relative to project root, not cwd or absolute
-    const storagePath = path.join(__dirname, '../../', process.env.STORAGE_PATH || 'data');
+    const storagePath = path.join(projectRoot, process.env.STORAGE_PATH || 'data');
     this.dbPath = path.join(storagePath, 'gmail-mcp.db');
   }
 
@@ -458,6 +458,17 @@ export class DatabaseManager {
       archived: archiveStats
     };
   }
+
+  // mark emails as deleted
+ async markEmailsAsDeleted(emailIds: string[]): Promise<void> {
+  if (emailIds.length === 0) return;
+  const sql = `
+    UPDATE email_index
+    SET archived = 1, archive_location = ?, archive_date = strftime('%s', 'now')
+    WHERE id IN (${emailIds.map(() => '?').join(', ')})
+  `;
+  await this.run(sql, ['trash', ...emailIds]);
+}
 
   async close(): Promise<void> {
     if (this.db) {
