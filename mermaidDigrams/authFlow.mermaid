@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant Client as MCP Client
+    participant Server as Gmail MCP Server
+    participant OAuthHandler as OAuth2 Handler
+    participant GoogleOAuth as Google OAuth
+    participant TokenStorage as Token Storage
+
+    Client->>Server: Call tool: authenticate
+    Server->>OAuthHandler: Initiate OAuth2 flow
+    OAuthHandler->>GoogleOAuth: Redirect User for Authorization (browser opens)
+    GoogleOAuth-->>Client: User grants permission (redirect to GOOGLE_REDIRECT_URI)
+    Client->>Server: OAuth2 Callback with Authorization Code
+    Server->>OAuthHandler: Handle Callback with Code
+    OAuthHandler->>GoogleOAuth: Exchange Authorization Code for Access/Refresh Tokens
+    GoogleOAuth-->>OAuthHandler: Access Token, Refresh Token
+    OAuthHandler->>TokenStorage: Store Tokens securely
+    TokenStorage-->>OAuthHandler: Tokens Stored
+    OAuthHandler-->>Server: Authentication Successful
+    Server-->>Client: Authentication Success (email: user@gmail.com)

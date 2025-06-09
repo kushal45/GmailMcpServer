@@ -18,7 +18,6 @@ token.json
 
 # Data and cache
 data/
-cache/
 archives/
 *.db
 *.sqlite

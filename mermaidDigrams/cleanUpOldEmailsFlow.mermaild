@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant Client as MCP Client
+    participant Server as Gmail MCP Server
+    participant SearchEngine as Search Engine
+    participant ArchiveManager as Archive Manager
+    participant ExportManager as Export Manager
+    participant DeleteManager as Delete Manager
+    participant LocalCacheDB as Local Cache DB
+    participant ExternalStorage as External Storage
+
+    Client->>Server: Call tool: search_emails (year_range: {end: 2022}, size_range: {min: 5242880})
+    Server->>SearchEngine: Process Search Query
+    SearchEngine->>LocalCacheDB: Query Email Index for Criteria
+    LocalCacheDB-->>SearchEngine: Matching Email IDs
+    SearchEngine-->>Server: Search Results (list of email IDs)
+    Server-->>Client: Search Results Success
+
+    Client->>Server: Call tool: archive_emails (year: 2022, size_threshold: 5242880, method: "export", export_format: "mbox")
+    Server->>ArchiveManager: Initiate Archiving Process
+    ArchiveManager->>LocalCacheDB: Retrieve Email Details for Archiving
+    LocalCacheDB-->>ArchiveManager: Email Details
+    ArchiveManager->>ExportManager: Export Emails
+    ExportManager->>ExternalStorage: Write MBOX file
+    ExternalStorage-->>ExportManager: Export Complete
+    ExportManager-->>ArchiveManager: Export Status (file_path)
+    ArchiveManager->>LocalCacheDB: Update Archive Index
+    LocalCacheDB-->>ArchiveManager: Archive Index Updated
+    ArchiveManager-->>Server: Archiving Report (archived count, location)
+    Server-->>Client: Archiving Success
+
+    Client->>Server: Call tool: delete_emails (year: 2022, size_threshold: 5242880, confirm: true)
+    Server->>DeleteManager: Initiate Deletion Process
+    DeleteManager->>LocalCacheDB: Identify Emails for Deletion (based on criteria)
+    LocalCacheDB-->>DeleteManager: Email IDs to Delete
+    DeleteManager->>DeleteManager: Apply Safe Delete Logic (confirmation check)
+    DeleteManager->>Server: Request Confirmation
+    Server-->>Client: Request User Confirmation
+    Client->>Server: User Confirms Deletion
+    Server->>DeleteManager: Confirmation Received
+    DeleteManager->>DeleteManager: Perform Batch Delete (via Gmail API)
+    DeleteManager->>LocalCacheDB: Update Email Index (remove deleted entries)
+    LocalCacheDB-->>DeleteManager: Index Updated
+    DeleteManager-->>Server: Deletion Report (deleted count)
+    Server-->>Client: Deletion Success

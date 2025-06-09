@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant Client as MCP Client
+    participant Server as Gmail MCP Server
+    participant ExportManager as Export Manager
+    participant LocalCacheDB as Local Cache DB
+    participant GmailAPI as Gmail API Client
+    participant ExternalStorage as External Storage (Local/Cloud)
+
+    Client->>Server: Call tool: export_emails (search_criteria, format, include_attachments, output_path, cloud_upload)
+    Server->>ExportManager: Initiate Email Export
+    ExportManager->>LocalCacheDB: Retrieve Email IDs matching search_criteria (if provided)
+    LocalCacheDB-->>ExportManager: Matching Email IDs
+    ExportManager->>GmailAPI: Fetch Full Email Content & Attachments for Export (for each email ID)
+    GmailAPI-->>ExportManager: Full Email Data
+    ExportManager->>ExportManager: Format Emails (mbox/json/csv)
+    ExportManager->>ExternalStorage: Write Exported Data
+    ExternalStorage-->>ExportManager: Export Complete
+    ExportManager-->>Server: Export Report (exported count, file_path, size)
+    Server-->>Client: Export Success
