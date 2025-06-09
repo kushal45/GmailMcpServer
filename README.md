@@ -190,6 +190,60 @@ npm run dev    # Run with tsx (hot reload)
 npm run inspector
 ```
 
+## Testing
+
+The project includes comprehensive test suites to ensure reliability and correctness of all features.
+
+### Running Tests
+
+```bash
+# Run all tests
+npm test
+
+# Run with coverage
+npm test -- --coverage
+
+# Run specific test suite
+npm test -- --testPathPattern=delete
+```
+
+### Integration Tests
+
+#### Delete Email Tests
+The delete functionality has extensive integration tests covering all scenarios:
+
+```bash
+# Run delete integration tests with the dedicated runner
+node scripts/test-delete-integration.js
+
+# With coverage report
+node scripts/test-delete-integration.js --coverage
+
+# Run specific test scenarios
+node scripts/test-delete-integration.js --filter "delete by category"
+```
+
+For detailed information about delete email testing, see [Delete Email Testing Documentation](docs/DELETE_EMAIL_TESTING.md).
+
+### Test Structure
+
+```
+tests/
+├── unit/               # Unit tests for individual components
+├── integration/        # Integration tests for complete features
+│   └── delete/        # Delete email integration tests
+├── fixtures/          # Shared test data
+└── setup.ts          # Test environment setup
+```
+
+### Writing Tests
+
+- Follow the existing test patterns
+- Use descriptive test names
+- Mock external dependencies
+- Test both success and error cases
+- Maintain test coverage above 80%
+
 ## Security
 
 - OAuth2 tokens are encrypted at rest

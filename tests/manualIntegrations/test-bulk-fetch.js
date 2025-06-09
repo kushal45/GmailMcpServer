@@ -1,8 +1,8 @@
-import { EmailFetcher } from './build/email/EmailFetcher.js';
-import { AuthManager } from './build/auth/AuthManager.js';
-import { CacheManager } from './build/cache/CacheManager.js';
-import { DatabaseManager } from './build/database/DatabaseManager.js';
-import { logger } from './build/utils/logger.js';
+import { EmailFetcher } from '../../build/email/EmailFetcher.js';
+import { AuthManager } from '../../build/auth/AuthManager.js';
+import { CacheManager } from '../../build/cache/CacheManager.js';
+import { DatabaseManager } from '../../build/database/DatabaseManager.js';
+import { logger } from '../../build/utils/logger.js';
 
 async function testBulkFetch() {
   try {
