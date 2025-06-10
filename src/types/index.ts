@@ -25,6 +25,12 @@ export interface EmailMessage {
   internalDate: string;
 }
 
+export interface Header {
+  name: string;
+  value: string;
+}
+
+
 
 export const PriorityCategory = {
     HIGH: 'high',
@@ -35,18 +41,18 @@ export type PriorityCategory = typeof PriorityCategory[keyof typeof PriorityCate
 
 export interface EmailIndex {
   id: string;
-  threadId: string;
+  threadId?: string;
   category: PriorityCategory;
-  subject: string;
-  sender: string;
-  recipients: string[];
-  date: Date;
-  year: number;
-  size: number;
-  hasAttachments: boolean;
-  labels: string[];
-  snippet: string;
-  archived: boolean;
+  subject?: string;
+  sender?: string;
+  recipients?: string[];
+  date?: Date;
+  year?: number;
+  size?: number;
+  hasAttachments?: boolean;
+  labels?: string[];
+  snippet?: string;
+  archived?: boolean;
   archiveDate?: Date;
   archiveLocation?: string;
 }
@@ -141,12 +147,17 @@ export interface EmailStatistics {
 }
 
 export interface ListEmailsOptions {
-  category?: 'high' | 'medium' | 'low';
+  category?: PriorityCategory;
   year?: number;
   sizeRange?: { min?: number; max?: number };
   archived?: boolean;
   limit: number;
   offset: number;
+  
+  // Additional fields for Gmail API query
+  query?: string;
+  hasAttachments?: boolean;
+  labels?: string[];
 }
 
 export interface CategorizeOptions {

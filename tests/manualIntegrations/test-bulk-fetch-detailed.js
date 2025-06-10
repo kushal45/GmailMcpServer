@@ -18,7 +18,7 @@ async function testBulkFetch() {
     await databaseManager.initialize();
     
     // Initialize email fetcher
-    const emailFetcher = new EmailFetcher(authManager, cacheManager, databaseManager);
+    const emailFetcher = new EmailFetcher(databaseManager,authManager,cacheManager);
     
     console.log('Testing bulk email fetch...');
     

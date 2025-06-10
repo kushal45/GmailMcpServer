@@ -109,8 +109,14 @@ async function handleListEmails(args: any, context: ToolContext) {
   const emails = await context.emailFetcher.listEmails({
     category: args.category,
     year: args.year,
-    sizeRange: args.size_range,
+    sizeRange: args.size_min || args.size_max ? {
+      min: args.size_min,
+      max: args.size_max
+    } : undefined,
     archived: args.archived,
+    hasAttachments: args.has_attachments,
+    labels: args.labels,
+    query: args.query,
     limit: args.limit || 50,
     offset: args.offset || 0
   });

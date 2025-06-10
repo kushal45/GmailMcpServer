@@ -1,305 +1,492 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { EmailFetcher } from '../../../src/email/EmailFetcher';
-import { AuthManager } from '../../../src/auth/AuthManager';
-import { CacheManager } from '../../../src/cache/CacheManager';
-import { DatabaseManager } from '../../../src/database/DatabaseManager';
-import { 
-  createMockGmailClient, 
-  createMockDatabase, 
-  createMockCache,
-  mockFetch,
-  cleanupMocks 
-} from '../../utils/testHelpers';
-import { 
-  mockEmailMessage, 
-  mockEmailIndex, 
-  mockGmailListResponse,
-  mockGmailGetResponse,
-  createMockEmails 
-} from '../../fixtures/mockData';
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
+import { EmailFetcher } from "../../../src/email/EmailFetcher.js";
+import { AuthManager } from "../../../src/auth/AuthManager.js";
+import { CacheManager } from "../../../src/cache/CacheManager.js";
+import { EmailIndex, PriorityCategory } from "../../../src/types/index.js";
 
-// Mock node-fetch
-jest.mock('node-fetch');
+// Mock dependencies
+jest.mock("../../../src/auth/AuthManager.js");
+jest.mock("../../../src/cache/CacheManager.js");
 
-describe('EmailFetcher', () => {
+describe("EmailFetcher", () => {
   let emailFetcher: EmailFetcher;
-  let mockAuthManager: jest.Mocked<AuthManager>;
-  let mockCacheManager: jest.Mocked<CacheManager>;
-  let mockDatabaseManager: any;
-  let mockGmailClient: ReturnType<typeof createMockGmailClient>;
+  let mockDbManager: any;
+  let mockAuthManager: any;
+  let mockCacheManager: any;
+  let mockGmailClient: any;
 
   beforeEach(() => {
-    // Create mocks
-    mockGmailClient = createMockGmailClient();
+    // Use helper to create properly typed mock database manager
+    const { createMockDatabase } = require('../../utils/testHelpers');
+    mockDbManager = createMockDatabase();
     mockAuthManager = {
-      getGmailClient: jest.fn(() => Promise.resolve(mockGmailClient)),
-      getClient: jest.fn(() => ({
-        getAccessToken: jest.fn(() => Promise.resolve({ token: 'mock-token' }))
-      }))
-    } as any;
-    
+      getGmailClient: jest.fn(),
+    };
     mockCacheManager = {
       get: jest.fn(),
-      set: jest.fn()
-    } as any;
-    
-    mockDatabaseManager = createMockDatabase();
-    
+      set: jest.fn(),
+    };
+
+    // Setup Gmail client mock
+    mockGmailClient = {
+      users: {
+        messages: {
+          list: jest.fn(),
+          get: jest.fn(),
+        },
+      },
+    };
+
+    // Setup auth manager to return mock Gmail client
+    mockAuthManager.getGmailClient.mockResolvedValue(mockGmailClient);
+
+    // Create EmailFetcher instance with mocks
     emailFetcher = new EmailFetcher(
-      mockAuthManager as any,
-      mockCacheManager as any,
-      mockDatabaseManager
+      mockDbManager,
+      mockAuthManager,
+      mockCacheManager
     );
   });
 
   afterEach(() => {
-    cleanupMocks();
+    jest.clearAllMocks();
   });
 
-  describe('listEmails', () => {
-    const listOptions = {
-      limit: 10,
-      offset: 0
-    };
+  describe("listEmails", () => {
+    it("should return cached results when available and fresh", async () => {
+      // Setup mock cached data
+      const cachedEmails = [
+        { id: "email1", category: PriorityCategory.HIGH },
+        { id: "email2", category: PriorityCategory.MEDIUM },
+      ];
 
-    it('should return cached results if available', async () => {
-      const cachedData = {
-        emails: createMockEmails(5),
-        total: 5
-      };
-      mockCacheManager.get.mockReturnValue(cachedData);
+      mockCacheManager.get = jest.fn().mockReturnValue({
+        emails: cachedEmails,
+        total: 2,
+        timestamp: Date.now(), // Fresh timestamp
+      });
 
-      const result = await emailFetcher.listEmails(listOptions);
+      // Call listEmails
+      const result = await emailFetcher.listEmails({
+        limit: 10,
+        offset: 0,
+      });
 
-      expect(mockCacheManager.get).toHaveBeenCalledWith(
-        expect.stringContaining('email-list:')
-      );
-      expect(result).toEqual(cachedData);
-      expect(mockAuthManager.getGmailClient).not.toHaveBeenCalled();
+      // Verify results
+      expect(result.emails).toEqual(cachedEmails);
+      expect(result.total).toBe(2);
+
+      // Verify cache was checked but database was not queried
+      expect(mockCacheManager.get).toHaveBeenCalled();
+      expect(mockDbManager.searchEmails).not.toHaveBeenCalled();
     });
 
-    it('should fetch emails from Gmail API when cache miss', async () => {
+    it("should query database when cache is not available", async () => {
+      // Setup mock database results
+      const dbEmails: EmailIndex[] = [
+        { id: "email1", category: PriorityCategory.HIGH, subject: "Test Subject 1", sender: "sender@example.com", recipients: ["recipient@example.com"], date: new Date(), year: 2024, size: 1024, hasAttachments: false, labels: [], snippet: "Test snippet 1", archived: false },
+        { id: "email2", category: PriorityCategory.MEDIUM, subject: "Test Subject 2", sender: "sender@example.com", recipients: ["recipient@example.com"], date: new Date(), year: 2024, size: 2048, hasAttachments: false, labels: [], snippet: "Test snippet 2", archived: false }
+      ];
       mockCacheManager.get.mockReturnValue(null);
-      (mockGmailClient.users.messages.list as any).mockResolvedValue(mockGmailListResponse);
-      (mockGmailClient.users.messages.get as any).mockResolvedValue(mockGmailGetResponse);
+      mockDbManager.searchEmails.mockResolvedValue(dbEmails);
+      mockDbManager.getEmailCount.mockResolvedValue(2);
 
-      const result = await emailFetcher.listEmails(listOptions);
-
-      expect(mockAuthManager.getGmailClient).toHaveBeenCalled();
-      expect(mockGmailClient.users.messages.list).toHaveBeenCalledWith({
-        userId: 'me',
-        q: '',
-        maxResults: 10,
-        pageToken: undefined
-      });
-      expect(result.emails).toHaveLength(3); // Based on mockGmailListResponse
-      expect(mockDatabaseManager.bulkUpsertEmailIndex).toHaveBeenCalled();
-    });
-
-    it('should apply category filter', async () => {
-      mockCacheManager.get.mockReturnValue(null);
-      (mockGmailClient.users.messages.list as any).mockResolvedValue({
-        data: { messages: [], resultSizeEstimate: 0 }
+      // Call listEmails
+      const result = await emailFetcher.listEmails({
+        category: PriorityCategory.HIGH,
+        limit: 10,
+        offset: 0,
       });
 
-      await emailFetcher.listEmails({ ...listOptions, category: 'high' });
+      // Verify results
+      expect(result.emails).toEqual(dbEmails);
+      expect(result.total).toBe(2);
 
-      expect(mockGmailClient.users.messages.list).toHaveBeenCalledWith({
-        userId: 'me',
-        q: 'label:high',
-        maxResults: 10,
-        pageToken: undefined
-      });
-    });
-
-    it('should apply year filter', async () => {
-      mockCacheManager.get.mockReturnValue(null);
-      (mockGmailClient.users.messages.list as any).mockResolvedValue({
-        data: { messages: [], resultSizeEstimate: 0 }
-      });
-
-      await emailFetcher.listEmails({ ...listOptions, year: 2024 });
-
-      expect(mockGmailClient.users.messages.list).toHaveBeenCalledWith({
-        userId: 'me',
-        q: 'after:2024/1/1 before:2025/1/1',
-        maxResults: 10,
-        pageToken: undefined
-      });
-    });
-
-    it('should handle errors gracefully', async () => {
-      mockCacheManager.get.mockReturnValue(null);
-      const error = new Error('Gmail API error');
-      (mockGmailClient.users.messages.list as any).mockRejectedValue(error);
-
-      await expect(emailFetcher.listEmails(listOptions)).rejects.toThrow('Gmail API error');
-    });
-  });
-
-  describe('getEmailDetailsBulk', () => {
-    it('should return empty array for empty message IDs', async () => {
-      const result = await emailFetcher.getEmailDetailsBulk([]);
-      
-      expect(result).toEqual([]);
-      expect(mockAuthManager.getGmailClient).not.toHaveBeenCalled();
-    });
-
-    it('should fetch email details via batch API', async () => {
-      const messageIds = ['msg1', 'msg2', 'msg3'];
-      const mockBatchResponse = `--batch_123
-Content-Type: application/http
-
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  "id": "msg1",
-  "threadId": "thread1",
-  "labelIds": ["INBOX"],
-  "snippet": "Test email 1",
-  "payload": {
-    "headers": [
-      {"name": "From", "value": "sender1@example.com"},
-      {"name": "To", "value": "recipient@example.com"},
-      {"name": "Subject", "value": "Test Subject 1"},
-      {"name": "Date", "value": "Mon, 1 Jan 2024 12:00:00 +0000"}
-    ]
-  },
-  "sizeEstimate": 1024
-}
---batch_123--`;
-
-      const mockedFetch = mockFetch([{
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(mockBatchResponse)
-      }]);
-      (global as any).fetch = mockedFetch;
-
-      const result = await emailFetcher.getEmailDetailsBulk(messageIds);
-
-      expect(mockedFetch).toHaveBeenCalledWith(
-        'https://gmail.googleapis.com/batch/gmail/v1',
+      // Verify database was queried with correct parameters
+      expect(mockDbManager.searchEmails).toHaveBeenCalledWith(
         expect.objectContaining({
-          method: 'POST',
-          headers: expect.objectContaining({
-            'Authorization': 'Bearer mock-token',
-            'Content-Type': expect.stringContaining('multipart/mixed')
-          })
+          category: PriorityCategory.HIGH,
+          limit: 10,
+          offset: 0,
         })
       );
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe('msg1');
+
+      // Verify results were cached
+      expect(mockCacheManager.set).toHaveBeenCalled();
     });
 
-    it('should handle batch API errors and fall back to individual fetching for small batches', async () => {
-      const messageIds = ['msg1', 'msg2'];
-      const mockedFetch = mockFetch([{
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('Server error')
-      }]);
-      (global as any).fetch = mockedFetch;
+    it("should synchronize with Gmail API when needed", async () => {
+      // Setup conditions for sync
+      mockCacheManager.get.mockReturnValueOnce(null).mockReturnValueOnce(0);
+      mockDbManager.searchEmails.mockResolvedValueOnce([]).mockResolvedValueOnce([
+        { id: "email1", category: PriorityCategory.HIGH },
+      ]);
+      mockDbManager.getEmailCount.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
 
-      (mockGmailClient.users.messages.get as any).mockResolvedValue(mockGmailGetResponse);
+      // Setup Gmail API mock responses
+      mockGmailClient.users.messages.list.mockResolvedValue({
+        data: {
+          messages: [{ id: "email1", threadId: "thread1" }],
+        },
+      });
 
-      const result = await emailFetcher.getEmailDetailsBulk(messageIds);
+      mockGmailClient.users.messages.get.mockResolvedValue({
+        data: {
+          id: "email1",
+          threadId: "thread1",
+          labelIds: ["INBOX"],
+          snippet: "Test email",
+          sizeEstimate: 1024,
+          internalDate: Date.now().toString(),
+          payload: {
+            headers: [
+              { name: "Subject", value: "Test Subject" },
+              { name: "From", value: "sender@example.com" },
+              { name: "To", value: "recipient@example.com" },
+              { name: "Date", value: new Date().toISOString() },
+            ],
+          },
+        },
+      });
 
-      expect(mockedFetch).toHaveBeenCalled();
+      // Call listEmails
+      const result = await emailFetcher.listEmails({
+        limit: 10,
+        offset: 0,
+      });
+
+      // Verify results
+      expect(result.emails).toHaveLength(1);
+      expect(result.total).toBe(1);
+
+      // Verify Gmail API was called
       expect(mockAuthManager.getGmailClient).toHaveBeenCalled();
-      expect(mockGmailClient.users.messages.get).toHaveBeenCalledTimes(2);
+      expect(mockGmailClient.users.messages.list).toHaveBeenCalled();
+      expect(mockGmailClient.users.messages.get).toHaveBeenCalled();
+
+      // Verify database was updated
+      expect(mockDbManager.upsertEmailIndex).toHaveBeenCalled();
+
+      // Verify last sync time was updated
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        "last_gmail_sync",
+        expect.any(Number),
+        expect.any(Number)
+      );
     });
 
-    it('should handle missing emails gracefully', async () => {
-      const messageIds = ['msg1', 'msg2', 'msg3'];
-      const mockBatchResponse = `--batch_123
-Content-Type: application/http
+    it("should handle database errors gracefully", async () => {
+      mockDbManager.searchEmails.mockRejectedValue(new Error("Database error"));
 
-HTTP/1.1 404 Not Found
-Content-Type: application/json
+      // Expect the error to be propagated
+      await expect(
+        emailFetcher.listEmails({
+          limit: 10,
+          offset: 0,
+        })
+      ).rejects.toThrow("Database error");
+    });
 
-{
-  "error": {
-    "code": 404,
-    "message": "Message not found"
-  }
-}
---batch_123--`;
+    it("should handle Gmail API errors during synchronization", async () => {
+      mockCacheManager.get.mockReturnValueOnce(null).mockReturnValueOnce(0);
+      mockDbManager.searchEmails.mockResolvedValue([]);
+      mockDbManager.getEmailCount.mockResolvedValue(0);
 
-      const mockedFetch = mockFetch([{
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(mockBatchResponse)
-      }]);
-      (global as any).fetch = mockedFetch;
+      // Setup Gmail API to throw error
+      mockGmailClient.users.messages.list.mockRejectedValue(
+        new Error("API error")
+      );
 
-      const result = await emailFetcher.getEmailDetailsBulk(messageIds);
+      // Expect the error to be propagated
+      await expect(
+        emailFetcher.listEmails({
+          limit: 10,
+          offset: 0,
+        })
+      ).rejects.toThrow("API error");
+    });
 
-      expect(result).toEqual([]);
+    it("should handle malformed Gmail API responses", async () => {
+      mockCacheManager.get.mockReturnValueOnce(null).mockReturnValueOnce(0);
+      mockDbManager.searchEmails.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      mockDbManager.getEmailCount.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+
+      // Setup Gmail API with malformed response
+      mockGmailClient.users.messages.list.mockResolvedValue({
+        data: {}, // No messages array
+      });
+
+      // Call listEmails - should not throw but return empty results
+      const result = await emailFetcher.listEmails({
+        limit: 10,
+        offset: 0,
+      });
+
+      // Verify results are empty but valid
+      expect(result.emails).toEqual([]);
+      expect(result.total).toBe(0);
+    });
+
+    it("should handle malformed message data during synchronization", async () => {
+      mockCacheManager.get.mockReturnValueOnce(null).mockReturnValueOnce(0);
+      mockDbManager.searchEmails.mockResolvedValueOnce([]).mockResolvedValueOnce([
+        { id: "email1", category: PriorityCategory.HIGH },
+      ]);
+      mockDbManager.getEmailCount.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+
+      // Setup Gmail API with valid list but malformed message
+      mockGmailClient.users.messages.list.mockResolvedValue({
+        data: {
+          messages: [{ id: "email1" }, { id: "email2" }],
+        },
+      });
+
+      // First message is malformed
+      mockGmailClient.users.messages.get
+        .mockResolvedValueOnce({
+          data: {
+            id: "email1",
+            // Missing payload
+          },
+        })
+        // Second message is valid
+        .mockResolvedValueOnce({
+          data: {
+            id: "email2",
+            threadId: "thread2",
+            labelIds: ["INBOX"],
+            snippet: "Test email 2",
+            sizeEstimate: 1024,
+            internalDate: Date.now().toString(),
+            payload: {
+              headers: [
+                { name: "Subject", value: "Test Subject 2" },
+                { name: "From", value: "sender2@example.com" },
+                { name: "To", value: "recipient@example.com" },
+                { name: "Date", value: new Date().toISOString() },
+              ],
+            },
+          },
+        });
+
+      // Call listEmails - should handle the malformed message and continue
+      const result = await emailFetcher.listEmails({
+        limit: 10,
+        offset: 0,
+      });
+
+      // Verify results
+      expect(result.emails).toHaveLength(1);
+      expect(result.total).toBe(1);
+
+      // Verify both messages were attempted
+      expect(mockGmailClient.users.messages.get).toHaveBeenCalledTimes(2);
+
+      // Verify only one message was saved to database
+      expect(mockDbManager.upsertEmailIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("should apply all filter options correctly", async () => {
+      mockCacheManager.get.mockReturnValue(null);
+      mockDbManager.searchEmails.mockResolvedValue([]);
+      mockDbManager.getEmailCount.mockResolvedValue(0);
+
+      // Call listEmails with all filter options
+      await emailFetcher.listEmails({
+        category: PriorityCategory.HIGH,
+        year: 2023,
+        sizeRange: { min: 1000, max: 5000 },
+        archived: false,
+        hasAttachments: true,
+        labels: ["IMPORTANT", "WORK"],
+        query: "subject:test",
+        limit: 20,
+        offset: 10,
+      });
+
+      // Verify database was queried with all filters
+      expect(mockDbManager.searchEmails).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: PriorityCategory.HIGH,
+          year: 2023,
+          sizeRange: { min: 1000, max: 5000 },
+          archived: false,
+          hasAttachments: true,
+          labels: ["IMPORTANT", "WORK"],
+          limit: 20,
+          offset: 10,
+        })
+      );
+
+      // Verify Gmail query was built correctly
+      expect(mockGmailClient.users.messages.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          q: expect.stringContaining("subject:test"),
+        })
+      );
+    });
+
+    it("should force synchronization for specific filter combinations", async () => {
+      mockCacheManager.get.mockReturnValue(null);
+      const dbEmails = [{ id: "email1", category: PriorityCategory.HIGH }];
+      mockDbManager.searchEmails.mockResolvedValue(dbEmails);
+      mockDbManager.getEmailCount.mockResolvedValue(1);
+
+      // Setup Gmail API
+      mockGmailClient.users.messages.list.mockResolvedValue({
+        data: { messages: [] },
+      });
+
+      // Call listEmails with query parameter (should force sync)
+      await emailFetcher.listEmails({
+        query: "important",
+        limit: 10,
+        offset: 0,
+      });
+
+      // Verify Gmail API was called despite having database results
+      expect(mockGmailClient.users.messages.list).toHaveBeenCalled();
+    });
+
+    it("should handle stale cache correctly", async () => {
+      const cachedEmails = [{ id: "email1", category: PriorityCategory.HIGH }];
+      mockCacheManager.get.mockReturnValue({
+        emails: cachedEmails,
+        total: 1,
+        timestamp: Date.now() - 3600000 * 2, // 2 hours old (stale)
+      });
+      const dbEmails = [
+        { id: "email1", category: PriorityCategory.HIGH },
+        { id: "email2", category: PriorityCategory.MEDIUM },
+      ];
+      mockDbManager.searchEmails.mockResolvedValue(dbEmails);
+      mockDbManager.getEmailCount.mockResolvedValue(2);
+
+      // Call listEmails
+      const result = await emailFetcher.listEmails({
+        limit: 10,
+        offset: 0,
+      });
+
+      // Verify fresh results from database were returned, not stale cache
+      expect(result.emails).toEqual(dbEmails);
+      expect(result.total).toBe(2);
+
+      // Verify cache was updated
+      expect(mockCacheManager.set).toHaveBeenCalled();
     });
   });
 
-  describe('getAllMessageIds', () => {
-    it('should fetch all message IDs with pagination', async () => {
-      const page1Response = {
-        data: {
-          messages: [{ id: 'msg1' }, { id: 'msg2' }],
-          nextPageToken: 'token123'
-        }
-      };
-      const page2Response = {
-        data: {
-          messages: [{ id: 'msg3' }, { id: 'msg4' }],
-          nextPageToken: undefined
-        }
+  describe("convertToEmailIndex", () => {
+    it("should handle missing fields gracefully", async () => {
+      // Setup minimal valid message
+      const minimalMessage = {
+        id: "email1",
+        payload: {
+          headers: [],
+        },
       };
 
-      (mockGmailClient.users.messages.list as any)
-        .mockResolvedValueOnce(page1Response)
-        .mockResolvedValueOnce(page2Response);
+      // Access private method using any type
+      const convertMethod = (emailFetcher as any).convertToEmailIndex.bind(
+        emailFetcher
+      );
 
-      const result = await emailFetcher.getAllMessageIds();
+      // Convert the minimal message
+      const result = convertMethod(minimalMessage);
 
-      expect(mockGmailClient.users.messages.list).toHaveBeenCalledTimes(2);
-      expect(mockGmailClient.users.messages.list).toHaveBeenNthCalledWith(1, {
-        userId: 'me',
-        q: '',
-        maxResults: 500,
-        pageToken: undefined
-      });
-      expect(mockGmailClient.users.messages.list).toHaveBeenNthCalledWith(2, {
-        userId: 'me',
-        q: '',
-        maxResults: 500,
-        pageToken: 'token123'
-      });
-      expect(result).toEqual(['msg1', 'msg2', 'msg3', 'msg4']);
+      // Verify defaults were applied
+      expect(result.id).toBe("email1");
+      expect(result.threadId).toBe("email1"); // Falls back to id
+      expect(result.subject).toBe("");
+      expect(result.sender).toBe("");
+      expect(result.recipients).toEqual([]);
+      expect(result.size).toBe(0);
+      expect(result.hasAttachments).toBe(false);
+      expect(result.labels).toEqual([]);
+      expect(result.snippet).toBe("");
     });
 
-    it('should apply query filter when provided', async () => {
-      (mockGmailClient.users.messages.list as any).mockResolvedValue({
-        data: { messages: [], nextPageToken: undefined }
-      });
+    it("should throw error for completely invalid message", async () => {
+      // Setup invalid message
+      const invalidMessage = {};
 
-      await emailFetcher.getAllMessageIds('from:test@example.com');
+      // Access private method using any type
+      const convertMethod = (emailFetcher as any).convertToEmailIndex.bind(
+        emailFetcher
+      );
 
-      expect(mockGmailClient.users.messages.list).toHaveBeenCalledWith({
-        userId: 'me',
-        q: 'from:test@example.com',
-        maxResults: 500,
-        pageToken: undefined
-      });
+      // Expect error when converting
+      expect(() => convertMethod(invalidMessage)).toThrow();
+    });
+  });
+
+  describe("checkForAttachments", () => {
+    it("should detect direct attachments", async () => {
+      // Setup payload with direct attachment
+      const payload = {
+        filename: "document.pdf",
+        mimeType: "application/pdf",
+      };
+
+      // Access private method using any type
+      const checkMethod = (emailFetcher as any).checkForAttachments.bind(
+        emailFetcher
+      );
+
+      // Check for attachments
+      const result = checkMethod(payload);
+
+      // Verify attachment was detected
+      expect(result).toBe(true);
     });
 
-    it('should handle empty results', async () => {
-      (mockGmailClient.users.messages.list as any).mockResolvedValue({
-        data: { messages: undefined, nextPageToken: undefined }
-      });
+    it("should detect nested attachments", async () => {
+      // Setup payload with nested attachment
+      const payload = {
+        parts: [
+          { filename: "", mimeType: "text/plain" },
+          {
+            mimeType: "multipart/mixed",
+            parts: [{ filename: "document.pdf", mimeType: "application/pdf" }],
+          },
+        ],
+      };
 
-      const result = await emailFetcher.getAllMessageIds();
+      // Access private method using any type
+      const checkMethod = (emailFetcher as any).checkForAttachments.bind(
+        emailFetcher
+      );
 
-      expect(result).toEqual([]);
+      // Check for attachments
+      const result = checkMethod(payload);
+
+      // Verify attachment was detected
+      expect(result).toBe(true);
+    });
+
+    it("should handle null or invalid payload", async () => {
+      // Access private method using any type
+      const checkMethod = (emailFetcher as any).checkForAttachments.bind(
+        emailFetcher
+      );
+
+      // Check various invalid payloads
+      expect(() => checkMethod(null)).not.toThrow();
+      expect(checkMethod(null)).toBe(false);
+      expect(() => checkMethod({})).not.toThrow();
+      expect(checkMethod({})).toBe(false);
+      expect(() => checkMethod({ parts: null })).not.toThrow();
+      expect(checkMethod({ parts: null })).toBe(false);
+      expect(() => checkMethod({ parts: "not an array" })).not.toThrow();
+      expect(checkMethod({ parts: "not an array" })).toBe(false);
     });
   });
 });

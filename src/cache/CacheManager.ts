@@ -39,6 +39,25 @@ export class CacheManager {
   static categoryStatsKey(): string {
     return 'category-stats';
   }
+  
+  /**
+   * Check if cache has a key
+   */
+  has(key: string): boolean {
+    return this.cache.has(key);
+  }
+  
+  /**
+   * Get cache statistics
+   */
+  stats() {
+    return {
+      keys: this.cache.size,
+      hits: 0,  // Not tracked in this implementation
+      misses: 0, // Not tracked in this implementation
+      size: 0    // Memory size not tracked
+    };
+  }
 
   /**
    * Get item from cache

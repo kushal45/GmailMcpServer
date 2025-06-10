@@ -48,7 +48,7 @@ export class SearchEngine {
     const searchableText = `
       ${email.subject} 
       ${email.sender} 
-      ${email.recipients.join(' ')} 
+      ${email?.recipients?.join(' ')} 
       ${email.snippet}
     `.toLowerCase();
 

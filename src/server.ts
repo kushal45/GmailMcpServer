@@ -49,7 +49,7 @@ export class GmailMcpServer {
     this.databaseManager = new DatabaseManager();
     this.cacheManager = new CacheManager();
     this.authManager = new AuthManager();
-    this.emailFetcher = new EmailFetcher(this.authManager, this.cacheManager,this.databaseManager);
+    this.emailFetcher = new EmailFetcher(this.databaseManager,this.authManager,this.cacheManager);
     this.categorizationEngine = new CategorizationEngine(this.databaseManager, this.cacheManager);
     this.searchEngine = new SearchEngine(this.databaseManager, this.emailFetcher);
     this.archiveManager = new ArchiveManager(this.authManager, this.databaseManager);

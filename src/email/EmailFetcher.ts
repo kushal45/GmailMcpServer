@@ -1,71 +1,119 @@
-import { gmail_v1 } from 'googleapis';
+import { DatabaseManager } from '../database/DatabaseManager.js';
 import { AuthManager } from '../auth/AuthManager.js';
 import { CacheManager } from '../cache/CacheManager.js';
-import { EmailMessage, EmailIndex, ListEmailsOptions } from '../types/index.js';
+import { EmailIndex, ListEmailsOptions, PriorityCategory, Header} from '../types/index.js';
 import { logger } from '../utils/logger.js';
-import { OAuth2Client } from 'google-auth-library';
-import fetch from 'node-fetch';
-import { DatabaseManager } from '../database/DatabaseManager.js';
 
 export class EmailFetcher {
+  private databaseManager: DatabaseManager;
   private authManager: AuthManager;
   private cacheManager: CacheManager;
-  private databaseManager: DatabaseManager;
+  
+  // Cache expiration time in seconds
+  private readonly CACHE_TTL = 3600; // 1 hour
+  
+  // Maximum number of emails to fetch in one batch
+  private readonly BATCH_SIZE = 50;
 
-  constructor(authManager: AuthManager, cacheManager: CacheManager, databaseManager: DatabaseManager) {
+  constructor(
+    databaseManager: DatabaseManager,
+    authManager: AuthManager,
+    cacheManager: CacheManager
+  ) {
+    this.databaseManager = databaseManager;
     this.authManager = authManager;
     this.cacheManager = cacheManager;
-    this.databaseManager = databaseManager;
   }
 
-  async listEmails(options: ListEmailsOptions): Promise<{ emails: EmailIndex[], total: number }> {
-    // Check cache first
-    const cacheKey = CacheManager.emailListKey(options);
-    const cached = this.cacheManager.get<{ emails: EmailIndex[], total: number }>(cacheKey);
-    if (cached) {
-      logger.debug('Returning cached email list');
-      return cached;
-    }
+  /**
+   * List emails based on provided filters
+   * Implements the flow from the sequence diagram
+   */
+  async listEmails(options: ListEmailsOptions): Promise<{
+    emails: EmailIndex[];
+    total: number;
+  }> {
     logger.info('Listing emails with options:', options);
+    
     try {
-      const gmail = await this.authManager.getGmailClient();
+      // Step 1: Query local cache DB for email metadata
+      const cacheKey = this.generateCacheKey(options);
+      const cachedResult = this.cacheManager.get<{
+        emails: EmailIndex[];
+        total: number;
+        timestamp: number;
+      }>(cacheKey);
       
-      // Build query
-      let query = '';
-      if (options.category) {
-        // This will be refined after categorization is implemented
-        query += `label:${options.category} `;
+      // If we have fresh cached results, return them
+      if (cachedResult && Date.now() - cachedResult.timestamp < this.CACHE_TTL * 1000) {
+        logger.info(`Returning ${cachedResult.emails.length} emails from cache`);
+        return {
+          emails: cachedResult.emails,
+          total: cachedResult.total
+        };
       }
-      if (options.year) {
-        query += `after:${options.year}/1/1 before:${options.year + 1}/1/1 `;
-      }
-      if (options.archived) {
-        query += 'label:archived ';
-      }
-      logger.info('Listing emails with query:', query.trim());
-
-      // Fetch emails
-      const response = await gmail.users.messages.list({
-        userId: 'me',
-        q: query.trim(),
-        maxResults: options.limit,
-        pageToken: options.offset ? String(options.offset) : undefined
-      });
-      logger.info('Fetched emails:', response.data);
-
-      const messages = response.data.messages || [];
-      console.error(`Found ${messages.length} emails matching criteria`);
-     const emailDetails = await this.getEmailDetails(gmail, messages.map(m => m.id!));
-
-      const result = {
-        emails: emailDetails,
-        total: response.data.resultSizeEstimate || 0
+      
+      // Step 2: Query database for matching emails
+      const searchCriteria: any = {
+        category: options.category,
+        year: options.year,
+        sizeRange: options.sizeRange,
+        archived: options.archived,
+        limit: options.limit,
+        offset: options.offset
       };
-
-      // Cache the result
-     // this.cacheManager.set(cacheKey, result);
-      this.databaseManager.bulkUpsertEmailIndex(emailDetails);
-      return result;
+      
+      // Add additional search criteria if provided
+      if (options.hasAttachments !== undefined) {
+        searchCriteria.hasAttachments = options.hasAttachments;
+      }
+      
+      if (options.labels && options.labels.length > 0) {
+        searchCriteria.labels = options.labels;
+      }
+      
+      const emails = await this.databaseManager.searchEmails(searchCriteria);
+      
+      // Get total count without pagination
+      const countCriteria = { ...searchCriteria };
+      delete countCriteria.limit;
+      delete countCriteria.offset;
+      const total = await this.databaseManager.getEmailCount(countCriteria);
+      
+      // Step 3: Check if we need to fetch from Gmail API
+      const needsSync = this.needsSynchronization(emails, options);
+      
+      if (needsSync) {
+        // Step 4: Apply incremental synchronization logic
+        await this.synchronizeWithGmail(options);
+        
+        // Step 5: Re-query database after synchronization
+        const refreshedEmails = await this.databaseManager.searchEmails(searchCriteria);
+        const refreshedTotal = await this.databaseManager.getEmailCount(countCriteria);
+        
+        // Step 6: Cache the results
+        this.cacheManager.set(cacheKey, {
+          emails: refreshedEmails,
+          total: refreshedTotal,
+          timestamp: Date.now()
+        }, this.CACHE_TTL);
+        
+        logger.info(`Returning ${refreshedEmails.length} emails after synchronization`);
+        return {
+          emails: refreshedEmails,
+          total: refreshedTotal
+        };
+      }
+      
+      // Step 6: Cache the results
+      this.cacheManager.set(cacheKey, {
+        emails,
+        total,
+        timestamp: Date.now()
+      }, this.CACHE_TTL);
+      
+      logger.info(`Returning ${emails.length} emails from database`);
+      return { emails, total };
     } catch (error) {
       logger.error('Error listing emails:', error);
       throw error;
@@ -73,375 +121,260 @@ export class EmailFetcher {
   }
 
   /**
-   * Get email details for a single or multiple message IDs
+   * Determine if we need to synchronize with Gmail API
    */
-  private async getEmailDetails(gmail: gmail_v1.Gmail, messageIds: string[]): Promise<EmailIndex[]> {
-    const emailDetails: EmailIndex[] = [];
-
-    for (const messageId of messageIds) {
-      try {
-        const response = await gmail.users.messages.get({
-          userId: 'me',
-          id: messageId,
-          format: 'metadata',
-          metadataHeaders: ['From', 'To', 'Subject', 'Date']
-        });
-        if (!response.data || !response.data.id) {
-          logger.error(`Skipping message with no data or id: ${messageId}`);
-          continue;
-        }
-        const message = response.data;
-        logger.debug(`Fetched details for message ${messageId}:`, message);
-        if (!message.id || !message.threadId) {
-          logger.error(`Skipping message with missing id or threadId: ${messageId}`);
-          continue;
-        }
-
-        // Extract headers
-        const headers = message.payload?.headers || [];
-        const getHeader = (name: string) => headers.find(h => h.name === name)?.value || '';
-
-        // Parse date
-        const dateStr = getHeader('Date');
-        const date = dateStr ? new Date(dateStr) : new Date();
-
-        // Extract labels
-        const labels = message.labelIds || [];
-        const isArchived = labels.includes('ARCHIVED');
-
-        const emailIndex: EmailIndex = {
-          id: message.id,
-          threadId: message.threadId,
-          category: 'low', // Default category, will be categorized later
-          subject: getHeader('Subject') || 'No Subject',
-          sender: getHeader('From') || 'No Sender',
-          recipients: getHeader('To').split(',').map(r => r.trim()).filter(Boolean),
-          date,
-          year: date.getFullYear(),
-          size: message.sizeEstimate || 0,
-          hasAttachments: message.payload?.parts?.some(part => part.filename && part.filename.length > 0) || false,
-          labels,
-          snippet: message.snippet || '',
-          archived: isArchived,
-          archiveDate: undefined,
-          archiveLocation: undefined
-        };
-
-        emailDetails.push(emailIndex);
-      } catch (error) {
-        logger.error(`Error fetching details for message ${messageId}:`, error);
-      }
+  private needsSynchronization(emails: EmailIndex[], options: ListEmailsOptions): boolean {
+    // If explicit query or specific filters are provided, we might need fresh data
+    if (options.query || (options.labels && options.labels.length > 0)) {
+      return true;
     }
-
-    return emailDetails;
+    
+    // If no emails found, we might need to sync
+    if (emails.length === 0 && options.offset === 0) {
+      return true;
+    }
+    
+    // Check last sync time from cache
+    const lastSyncKey = 'last_gmail_sync';
+    const lastSync = this.cacheManager.get<number>(lastSyncKey) || 0;
+    
+    // If it's been more than 1 hour since last sync, sync again
+    if (Date.now() - lastSync > this.CACHE_TTL * 1000) {
+      return true;
+    }
+    
+    return false;
   }
-
-  async getEmailDetailsBulk(messageIds: string[]): Promise<EmailIndex[]> {
-    if (!messageIds || messageIds.length === 0) {
-      logger.warn('No message IDs provided for bulk fetch');
-      return [];
-    }
-    try {
-      const emailDetails = await this.fetchEmailBatchViaHttpBatch(messageIds);
-      
-      // Log warning if some emails couldn't be fetched, but don't throw error
-      if (!emailDetails || emailDetails.length === 0) {
-        logger.warn(`No email details retrieved for message IDs: ${messageIds.join(', ')}`);
-        logger.warn('This might be due to deleted messages or permission issues');
-        return [];
-      }
-      
-      if (emailDetails.length < messageIds.length) {
-        logger.warn(`Only fetched ${emailDetails.length} out of ${messageIds.length} requested emails`);
-        const fetchedIds = new Set(emailDetails.map(e => e.id));
-        const missingIds = messageIds.filter(id => !fetchedIds.has(id));
-        logger.debug('Missing email IDs:', missingIds);
-      }
-
-      return emailDetails;
-    } catch (error) {
-      logger.error(`Error fetching email details for batch:`, error);
-      logger.error(`Failed message IDs: ${messageIds.join(', ')}`);
-      
-      // Try to fall back to individual fetching for critical cases
-      if (messageIds.length <= 10) {
-        logger.info('Attempting fallback to individual email fetching...');
-        try {
-          const gmail = await this.authManager.getGmailClient();
-          return await this.getEmailDetails(gmail, messageIds);
-        } catch (fallbackError) {
-          logger.error('Fallback individual fetching also failed:', fallbackError);
-        }
-      }
-      
-      return [];
-    }
-  }
-
- 
 
   /**
-   * Fetch email details in bulk using Gmail batch endpoint (multipart/mixed HTTP request)
-   * This is more efficient than individual API calls for large numbers of emails
+   * Synchronize with Gmail API to fetch missing or newer emails
    */
-  private async fetchEmailBatchViaHttpBatch(messageIds: string[]): Promise<EmailIndex[]> {
-    const gmail = await this.authManager.getGmailClient();
-    const oAuth2Client: OAuth2Client = this.authManager.getClient();
-    const emails: EmailIndex[] = [];
-    const batchSize = parseInt(process.env.GMAIL_BATCH_SIZE || '100', 10);
-    const endpoint = 'https://gmail.googleapis.com/batch/gmail/v1';
-
-    for (let i = 0; i < messageIds.length; i += batchSize) {
-      const batch = messageIds.slice(i, i + batchSize);
-      const boundary = 'batch_' + Math.random().toString(36).substring(2);
-      let body = '';
-      for (const id of batch) {
-        body += `--${boundary}\r\n`;
-        body += 'Content-Type: application/http\r\n';
-        body += 'Content-Transfer-Encoding: binary\r\n\r\n';
-        body += `GET /gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date HTTP/1.1\r\n`;
-        body += 'Host: gmail.googleapis.com\r\n\r\n';
-      }
-      body += `--${boundary}--\r\n`;
-
-      const token = (await oAuth2Client.getAccessToken()).token;
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': `multipart/mixed; boundary=${boundary}`
-        },
-        body
-      });
-      
-      if (!response.ok) {
-        logger.error(`Batch API request failed with status ${response.status}: ${response.statusText}`);
-        const errorText = await response.text();
-        logger.error('Error response:', errorText);
-        continue;
+  private async synchronizeWithGmail(options: ListEmailsOptions): Promise<void> {
+    logger.info('Synchronizing with Gmail API');
+    
+    try {
+      // Get Gmail client
+      const gmailClient = await this.authManager.getGmailClient();
+      if (!gmailClient || !gmailClient.users || !gmailClient.users.messages) {
+        throw new Error('Invalid Gmail client or missing messages API');
       }
       
-      const text = await response.text();
-      logger.info(`Batch response received for ${text} emails`);
-
-      // Log the response for debugging
-      logger.debug('Batch API response status:', response.status);
-      logger.debug('Response headers:', response.headers);
+      // Build query based on options
+      const query = this.buildGmailQuery(options);
       
-      // Log first 500 chars of response for debugging
-      if (text.length > 0) {
-        logger.debug('Response preview (first 500 chars):', text.substring(0, 500));
+      // Fetch emails from Gmail API with retry logic
+      let response;
+      try {
+        response = await gmailClient.users.messages.list({
+          userId: 'me',
+          q: query,
+          maxResults: this.BATCH_SIZE
+        });
+      } catch (error) {
+        logger.error('Error fetching message list from Gmail API:', error);
+        throw new Error(`Failed to fetch messages: ${(error as Error).message || 'Unknown error'}`);
       }
       
-      // Check if this is a multipart response or a single response
-      const isMultipart = text.includes(`--${boundary}`);
+      // Validate response data
+      if (!response || !response.data) {
+        logger.warn('Empty response from Gmail API');
+        return;
+      }
       
-      if (!isMultipart) {
-        // Handle single response (when batch contains only one item)
-        logger.debug('Handling single response format');
-        
-        // The response includes HTTP headers, we need to extract the JSON body
-        // Look for the double line break that separates headers from body
-        const bodyStartIndex = text.indexOf('\r\n\r\n');
-        if (bodyStartIndex === -1) {
-          logger.error('Could not find HTTP body separator in response');
-          continue;
-        }
-        
-        // Extract the body part (after headers)
-        const bodyContent = text.substring(bodyStartIndex + 4).trim();
-        
-        // Find the JSON content in the body
-        const jsonStartIndex = bodyContent.indexOf('{');
-        if (jsonStartIndex !== -1) {
-          try {
-            // Find the matching closing brace for proper JSON extraction
-            let braceCount = 0;
-            let jsonEndIndex = -1;
-            
-            for (let i = jsonStartIndex; i < bodyContent.length; i++) {
-              if (bodyContent[i] === '{') braceCount++;
-              else if (bodyContent[i] === '}') {
-                braceCount--;
-                if (braceCount === 0) {
-                  jsonEndIndex = i;
-                  break;
-                }
-              }
-            }
-            
-            if (jsonEndIndex !== -1) {
-              const jsonContent = bodyContent.substring(jsonStartIndex, jsonEndIndex + 1);
-              const json = JSON.parse(jsonContent);
-            
-            if (json && json.id && json.threadId) {
-              const headers = json.payload?.headers || [];
-              const getHeader = (name: string) => headers.find((h: any) => h.name === name)?.value || '';
-              
-              const dateStr = getHeader('Date');
-              const date = dateStr ? new Date(dateStr) : new Date();
-              const labels = json.labelIds || [];
-              
-              const emailIndex: EmailIndex = {
-                id: json.id,
-                threadId: json.threadId,
-                category: 'low',
-                subject: getHeader('Subject') || 'No Subject',
-                sender: getHeader('From') || 'No Sender',
-                recipients: getHeader('To').split(',').map((r: string) => r.trim()).filter(Boolean),
-                date,
-                year: date.getFullYear(),
-                size: json.sizeEstimate || 0,
-                hasAttachments: json.payload?.parts?.some((part: any) => part.filename && part.filename.length > 0) || false,
-                labels,
-                snippet: json.snippet || '',
-                archived: labels.includes('ARCHIVED'),
-                archiveDate: undefined,
-                archiveLocation: undefined
-              };
-              
-              emails.push(emailIndex);
-            }
-            } else {
-              logger.error('Could not find matching closing brace for JSON');
-            }
-          } catch (e) {
-            logger.error('Failed to parse single response JSON:', e);
-            logger.debug('Body content that failed to parse:', bodyContent.substring(0, 500));
+      const messages = response.data.messages || [];
+      logger.info(`Fetched ${messages.length} messages from Gmail API`);
+      
+      if (messages.length === 0) {
+        logger.info('No new messages to synchronize');
+        // Still update the sync time to prevent repeated empty calls
+        this.cacheManager.set('last_gmail_sync', Date.now(), this.CACHE_TTL * 24);
+        return;
+      }
+      
+      // Process each message
+      for (const message of messages) {
+        try {
+          if (!message || !message.id) {
+            logger.warn('Skipping message with missing ID');
+            continue;
           }
-        } else {
-          logger.error('No JSON content found in response body');
-        }
-      } else {
-        // Parse multipart/mixed response
-        const parts = text.split(`--${boundary}`);
-        logger.debug(`Found ${parts.length} parts in batch response`);
-        
-        for (const part of parts) {
-          if (part.includes('Content-Type: application/http')) {
-            try {
-              // Find the HTTP response part - improved regex to handle various line endings
-              const httpResponseMatch = part.match(/HTTP\/\d\.\d\s+(\d+)\s+[\w\s]+\r?\n([\s\S]*?)(\r?\n\r?\n)([\s\S]*)/);
-              
-              if (httpResponseMatch) {
-                const statusCode = parseInt(httpResponseMatch[1]);
-                let responseBody = httpResponseMatch[4];
-                
-                // Only process successful responses
-                if (statusCode === 200 && responseBody) {
-                  // Clean up the response body - remove any trailing boundary markers or extra content
-                  responseBody = responseBody.trim();
-                  
-                  // Find the start of JSON content (starts with '{')
-                  const jsonStartIndex = responseBody.indexOf('{');
-                  if (jsonStartIndex !== -1) {
-                    // Find the matching closing brace
-                    let braceCount = 0;
-                    let jsonEndIndex = -1;
-                    
-                    for (let i = jsonStartIndex; i < responseBody.length; i++) {
-                      if (responseBody[i] === '{') braceCount++;
-                      else if (responseBody[i] === '}') {
-                        braceCount--;
-                        if (braceCount === 0) {
-                          jsonEndIndex = i;
-                          break;
-                        }
-                      }
-                    }
-                    
-                    if (jsonEndIndex !== -1) {
-                      // Extract only the JSON content
-                      const jsonContent = responseBody.substring(jsonStartIndex, jsonEndIndex + 1);
-                      
-                      try {
-                        const json = JSON.parse(jsonContent);
-                        
-                        if (json && json.id && json.threadId) {
-                          // Parse the batch response directly
-                          const headers = json.payload?.headers || [];
-                          const getHeader = (name: string) => headers.find((h: any) => h.name === name)?.value || '';
-                          
-                          const dateStr = getHeader('Date');
-                          const date = dateStr ? new Date(dateStr) : new Date();
-                          const labels = json.labelIds || [];
-                          
-                          const emailIndex: EmailIndex = {
-                            id: json.id,
-                            threadId: json.threadId,
-                            category: 'low', // Default category, will be categorized later
-                            subject: getHeader('Subject') || 'No Subject',
-                            sender: getHeader('From') || 'No Sender',
-                            recipients: getHeader('To').split(',').map((r: string) => r.trim()).filter(Boolean),
-                            date,
-                            year: date.getFullYear(),
-                            size: json.sizeEstimate || 0,
-                            hasAttachments: json.payload?.parts?.some((part: any) => part.filename && part.filename.length > 0) || false,
-                            labels,
-                            snippet: json.snippet || '',
-                            archived: labels.includes('ARCHIVED'),
-                            archiveDate: undefined,
-                            archiveLocation: undefined
-                          };
-                          
-                          emails.push(emailIndex);
-                        }
-                      } catch (parseError) {
-                        logger.error('Failed to parse JSON content:', parseError);
-                        logger.debug('JSON content that failed to parse:', jsonContent.substring(0, 200));
-                      }
-                    } else {
-                      logger.warn('Could not find matching closing brace for JSON in response');
-                    }
-                  } else {
-                    logger.warn('Response body does not contain JSON (no opening brace found)');
-                    logger.debug('Response body preview:', responseBody.substring(0, 100));
-                  }
-                } else {
-                  logger.warn(`Batch response returned status ${statusCode} for one of the messages`);
-                }
-              }
-            } catch (e) {
-              logger.error('Failed to parse batch email response:', e);
-              logger.debug('Problematic part (first 500 chars):', part.substring(0, 500));
-              logger.debug('Part length:', part.length);
-              
-              // Try to extract any useful information from the error
-              if (part.includes('"id"') && part.includes('"threadId"')) {
-                logger.debug('Part appears to contain email data but failed to parse');
-              }
-            }
+          
+          // Get full message details
+          const fullMessage = await gmailClient.users.messages.get({
+            userId: 'me',
+            id: message.id
+          });
+          
+          if (!fullMessage || !fullMessage.data) {
+            logger.warn(`Failed to get full message for ID: ${message.id}`);
+            continue;
           }
+          
+          // Convert to EmailIndex format
+          const emailIndex = this.convertToEmailIndex(fullMessage.data);
+          
+          // Save to database
+          await this.databaseManager.upsertEmailIndex(emailIndex);
+        } catch (error) {
+          // Log error but continue processing other messages
+          logger.error(`Error processing message ${message?.id || 'unknown'}:`, error);
         }
       }
-      // Small delay between batches
-      if (i + batchSize < messageIds.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Update last sync time
+      this.cacheManager.set('last_gmail_sync', Date.now(), this.CACHE_TTL * 24); // 24 hours
+      
+      logger.info('Synchronization completed');
+    } catch (error) {
+      logger.error('Error synchronizing with Gmail:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Build Gmail API query based on options
+   */
+  private buildGmailQuery(options: ListEmailsOptions): string {
+    const queryParts: string[] = [];
+    
+    // Add custom query if provided
+    if (options.query) {
+      queryParts.push(options.query);
+    }
+    
+    if (options.year) {
+      const startDate = new Date(options.year, 0, 1);
+      const endDate = new Date(options.year + 1, 0, 1);
+      queryParts.push(`after:${this.formatDate(startDate)} before:${this.formatDate(endDate)}`);
+    }
+    
+    if (options.sizeRange) {
+      if (options.sizeRange.min) {
+        queryParts.push(`larger:${Math.floor(options.sizeRange.min / 1024)}k`);
+      }
+      if (options.sizeRange.max) {
+        queryParts.push(`smaller:${Math.floor(options.sizeRange.max / 1024)}k`);
       }
     }
     
-    return emails;
+    if (options.hasAttachments) {
+      queryParts.push('has:attachment');
+    }
+    
+    if (options.labels && options.labels.length > 0) {
+      options.labels.forEach(label => {
+        queryParts.push(`label:${label}`);
+      });
+    }
+    
+    if (options.archived === false) {
+      queryParts.push('in:inbox');
+    } else if (options.archived === true) {
+      queryParts.push('-in:inbox');
+    }
+    
+    return queryParts.join(' ');
   }
 
-  async getAllMessageIds(query: string = ''): Promise<string[]> {
-    const gmail = await this.authManager.getGmailClient();
-    const messageIds: string[] = [];
-    let pageToken: string | undefined;
+  /**
+   * Format date for Gmail API query
+   */
+  private formatDate(date: Date): string {
+    return date.toISOString().split('T')[0].replace(/-/g, '/');
+  }
 
-    do {
-      const response = await gmail.users.messages.list({
-        userId: 'me',
-        q: query,
-        maxResults: 500,
-        pageToken
-      });
+  /**
+   * Convert Gmail message to EmailIndex format
+   */
+  private convertToEmailIndex(message: any): EmailIndex {
+    if (!message || !message.payload || !message.payload.headers) {
+      throw new Error(`Invalid message format: ${JSON.stringify(message)}`);
+    }
+    
+    // Extract headers
+    const headers: Header[] = message.payload.headers;
+    const subject = headers.find(h => h.name === 'Subject')?.value || '';
+    const from = headers.find(h => h.name === 'From')?.value || '';
+    const to = headers.find(h => h.name === 'To')?.value || '';
+    const date = headers.find(h => h.name === 'Date')?.value;
+    
+    // Parse date
+    const messageDate = date ? new Date(date) : new Date(parseInt(message.internalDate || Date.now()));
+    const year = messageDate.getFullYear();
+    
+    // Extract recipients - handle empty to field
+    const recipients = to ? to.split(',').map(r => r.trim()) : [];
+    
+    // Determine if has attachments
+    const hasAttachments = this.checkForAttachments(message.payload);
+    
+    // Default to medium priority until categorized
+    const category = PriorityCategory.MEDIUM;
+    
+    return {
+      id: message.id,
+      threadId: message.threadId || message.id, // Fallback to id if threadId is missing
+      category,
+      subject,
+      sender: from,
+      recipients,
+      date: messageDate,
+      year,
+      size: message.sizeEstimate || 0,
+      hasAttachments,
+      labels: message.labelIds || [],
+      snippet: message.snippet || '',
+      archived: !message.labelIds?.includes('INBOX')
+    };
+  }
 
-      const messages = response.data.messages || [];
-      messageIds.push(...messages.map(m => m.id!));
+  /**
+   * Check if message has attachments
+   */
+  private checkForAttachments(payload: any): boolean {
+    if (!payload) return false;
+    // Check for direct attachment in the payload
+    if (payload.filename && payload.filename.length > 0) {
+      return true;
+    }
+    
+    // Check for attachments in parts
+    if (!payload.parts || !Array.isArray(payload.parts)) {
+      return false;
+    }
+    
+    // Recursively check parts and their subparts
+    return payload.parts.some((part: any) => {
+      if (part.filename && part.filename.length > 0) {
+        return true;
+      }
       
-      pageToken = response.data.nextPageToken || undefined;
-    } while (pageToken);
+      // Check nested parts recursively
+      if (part.parts) {
+        return this.checkForAttachments(part);
+      }
+      
+      return false;
+    });
+  }
 
-    return messageIds;
+  /**
+   * Generate cache key based on options
+   */
+  private generateCacheKey(options: ListEmailsOptions): string {
+    // Create a normalized version of options for consistent cache keys
+    const normalizedOptions = {
+      category: options.category,
+      year: options.year,
+      sizeRange: options.sizeRange,
+      archived: options.archived,
+      hasAttachments: options.hasAttachments,
+      labels: options.labels,
+      query: options.query,
+      limit: options.limit,
+      offset: options.offset
+    };
+    
+    return `list_emails_${JSON.stringify(normalizedOptions)}`;
   }
 }

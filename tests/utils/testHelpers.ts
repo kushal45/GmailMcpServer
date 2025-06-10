@@ -96,7 +96,8 @@ export const createMockDatabase = () => {
     saveSavedSearch: jest.fn(() => Promise.resolve()),
     getSavedSearches: jest.fn(),
     updateSavedSearchUsage: jest.fn(() => Promise.resolve()),
-    deleteSavedSearch: jest.fn(() => Promise.resolve())
+    deleteSavedSearch: jest.fn(() => Promise.resolve()),
+    getEmailCount: jest.fn(),
   };
 };
 

@@ -71,10 +71,18 @@ export class CategorizationEngine {
   }
 
   private determineCategory(email: EmailIndex): PriorityCategory  {
-    const subject = email.subject.toLowerCase();
-    const sender = email.sender.toLowerCase();
-    const snippet = email.snippet.toLowerCase();
-    
+    const subject = email?.subject?.toLowerCase();
+    const sender = email?.sender?.toLowerCase();
+    const snippet = email?.snippet?.toLowerCase();
+    if(subject ==null){
+      throw new Error('Email subject is missing');
+    }
+    if(sender == null){
+      throw new Error('Email sender is missing');
+    }
+    if(snippet == null){
+      throw new Error('Email snippet is missing');
+    }
     // Check for high priority indicators
     if (this.isHighPriority(subject, sender, snippet, email)) {
       return PriorityCategory.HIGH;
@@ -107,7 +115,7 @@ export class CategorizationEngine {
     }
     
     // Check if it's a direct reply (not part of a large thread)
-    if (email.labels.includes(Labels.IMPORTANT) || email.labels.includes(Labels.AUTOMATED)) {
+    if (email?.labels?.includes(Labels.IMPORTANT) || email?.labels?.includes(Labels.AUTOMATED)) {
       return true;
     }
     
@@ -142,7 +150,7 @@ export class CategorizationEngine {
     
     
     // Large size with attachments might indicate newsletters
-    if (email.size > 1048576 && email.hasAttachments) {
+    if ((email.size ?? 0) > 1048576 && email?.hasAttachments) {
       return true;
     }
     

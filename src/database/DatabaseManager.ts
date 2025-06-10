@@ -1,15 +1,18 @@
 import sqlite3 from 'sqlite3';
-import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
+import { fileURLToPath } from 'url';
 import { logger } from '../utils/logger.js';
 import { EmailIndex, ArchiveRule, ArchiveRecord, SavedSearch } from '../types/index.js';
 
 export class DatabaseManager {
   private db: sqlite3.Database | null = null;
   private dbPath: string;
+  private initialized: boolean = false;
 
   constructor() {
+     const __filename = fileURLToPath(import.meta.url);
+     const __dirname = path.dirname(__filename);
     // Determine the project root directory
     // Since we know this file is in src/database, we can navigate up from there
     const projectRoot = path.resolve(__dirname, '../../');
@@ -39,6 +42,7 @@ export class DatabaseManager {
       // Create tables
       await this.createTables();
       
+      this.initialized = true;
       logger.info('Database initialized successfully');
     } catch (error) {
       logger.error('Failed to initialize database:', error);
@@ -191,15 +195,15 @@ export class DatabaseManager {
       email.subject,
       email.sender,
       JSON.stringify(email.recipients),
-      email.date.getTime(),
-      email.year,
-      email.size,
-      email.hasAttachments ? 1 : 0,
-      JSON.stringify(email.labels),
-      email.snippet,
-      email.archived ? 1 : 0,
-      email.archiveDate?.getTime() || null,
-      email.archiveLocation || null
+      email.date ? email.date.getTime() :Date.now(),
+      email?.year,
+      email?.size,
+      email?.hasAttachments ? 1 : 0,
+      JSON.stringify(email?.labels),
+      email?.snippet,
+      email?.archived ? 1 : 0,
+      email?.archiveDate?.getTime() || null,
+      email?.archiveLocation || null
     ]);
   }
 
@@ -218,14 +222,14 @@ export class DatabaseManager {
       email.subject,
       email.sender,
       JSON.stringify(email.recipients),
-      email.date.getTime(),
+       email.date ? email.date.getTime() : Date.now(),
       email.year,
       email.size,
       email.hasAttachments ? 1 : 0,
       JSON.stringify(email.labels),
       email.snippet,
       email.archived ? 1 : 0,
-      email.archiveDate?.getTime() || null,
+      email.archiveDate ? email.archiveDate.getTime() : null,
       email.archiveLocation || null
     ]);
     await this.run(sql, paramSets);
@@ -412,6 +416,57 @@ export class DatabaseManager {
     }));
   }
 
+  // Get email count based on criteria
+  async getEmailCount(criteria: any): Promise<number> {
+    let sql = 'SELECT COUNT(*) as count FROM email_index WHERE 1=1';
+    const params: any[] = [];
+
+    if (criteria.category) {
+      sql += ' AND category = ?';
+      params.push(criteria.category);
+    }
+
+    if (criteria.year) {
+      sql += ' AND year = ?';
+      params.push(criteria.year);
+    }
+
+    if (criteria.yearRange) {
+      if (criteria.yearRange.start) {
+        sql += ' AND year >= ?';
+        params.push(criteria.yearRange.start);
+      }
+      if (criteria.yearRange.end) {
+        sql += ' AND year <= ?';
+        params.push(criteria.yearRange.end);
+      }
+    }
+
+    if (criteria.sizeRange) {
+      if (criteria.sizeRange.min) {
+        sql += ' AND size >= ?';
+        params.push(criteria.sizeRange.min);
+      }
+      if (criteria.sizeRange.max) {
+        sql += ' AND size <= ?';
+        params.push(criteria.sizeRange.max);
+      }
+    }
+
+    if (criteria.archived !== undefined) {
+      sql += ' AND archived = ?';
+      params.push(criteria.archived ? 1 : 0);
+    }
+
+    if (criteria.sender) {
+      sql += ' AND sender LIKE ?';
+      params.push(`%${criteria.sender}%`);
+    }
+
+    const result = await this.get(sql, params);
+    return result ? result.count : 0;
+  }
+
   // Statistics methods
   async getEmailStatistics(includeArchived: boolean = true): Promise<any> {
     const archivedCondition = includeArchived ? '' : ' AND archived = 0';
@@ -479,6 +534,11 @@ export class DatabaseManager {
         });
       });
       this.db = null;
+      this.initialized = false;
     }
+  }
+  
+  isInitialized(): boolean {
+    return this.initialized;
   }
 }

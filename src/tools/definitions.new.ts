@@ -1,7 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { toolRegistry } from './ToolRegistry.js';
 import { authTools } from './definitions/auth.tools.js';
-import { emailTools } from './definitions/email.tools.js';
+import { registerEmailTools } from './definitions/email.tools.js';
 import { searchTools } from './definitions/search.tools.js';
 import { archiveTools } from './definitions/archive.tools.js';
 import { deleteTools } from './definitions/delete.tools.js';
@@ -13,11 +13,11 @@ export function registerBuiltInTools(): void {
 
   // Register tools by category
   authTools.forEach(tool => toolRegistry.registerTool(tool, 'authentication'));
-  emailTools.forEach(tool => toolRegistry.registerTool(tool, 'email_management'));
+  //emailTools.forEach(tool => toolRegistry.registerTool(tool, 'email_management'));
   searchTools.forEach(tool => toolRegistry.registerTool(tool, 'search'));
   archiveTools.forEach(tool => toolRegistry.registerTool(tool, 'archive'));
   deleteTools.forEach(tool => toolRegistry.registerTool(tool, 'delete'));
-
+  registerEmailTools();
   const stats = toolRegistry.getStats();
   logger.info('Built-in tools registered', stats);
 }

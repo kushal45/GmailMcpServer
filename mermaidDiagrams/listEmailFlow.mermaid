@@ -8,18 +8,19 @@ sequenceDiagram
 
     Client->>Server: Call tool: list_emails (filters: category, year, size_range, limit, offset, etc.)
     Server->>EmailFetcher: Request to list emails with filters
-    EmailFetcher->>LocalCacheDB: Query for email metadata matching filters (e.g., category, year, size)
-    LocalCacheDB-->>EmailFetcher: Returns matching email IDs/metadata
+    EmailFetcher->>LocalCacheDB: Query for email metadata matching filters (leveraging optimized indexing)
+    LocalCacheDB-->>EmailFetcher: Returns matching email IDs/metadata (from cache)
 
-    alt Data not fully in cache or needs refresh
-        EmailFetcher->>GmailAPIClient: Request full email content from Gmail API
-        GmailAPIClient->>GmailAPI: Fetch emails from Google's Gmail API
+    alt Data is insufficient (e.g., missing, stale, or specific filters require live data)
+        EmailFetcher->>EmailFetcher: Apply Incremental Synchronization Logic
+        EmailFetcher->>GmailAPIClient: Fetch missing/newer email content from Gmail API
+        GmailAPIClient->>GmailAPI: Request specific emails from Google's Gmail API (with internal retries/backoff)
         GmailAPI-->>GmailAPIClient: Email data from Google
-        GmailAPIClient-->>EmailFetcher: Full email data
-        EmailFetcher->>LocalCacheDB: Update cache with new/refreshed email metadata (optional, for future queries)
-        LocalCacheDB-->>EmailFetcher: Cache updated (optional)
+        GmailAPIClient-->>EmailFetcher: Full/Partial email data
+        EmailFetcher->>LocalCacheDB: Update cache with new/refreshed email metadata
+        LocalCacheDB-->>EmailFetcher: Cache updated
     end
 
-    EmailFetcher->>EmailFetcher: Apply pagination (limit, offset) and format results
+    EmailFetcher->>EmailFetcher: Consolidate data, apply pagination (limit, offset) and format results
     EmailFetcher-->>Server: Formatted email list and total count
     Server-->>Client: Returns emails and total count

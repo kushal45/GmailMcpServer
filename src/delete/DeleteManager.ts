@@ -183,12 +183,14 @@ export class DeleteManager {
     for (const email of emails) {
       stats.byCategory[email.category]++;
       
-      const year = email.year;
+      const year = email.year || new Date().getFullYear();
       if (!stats.byYear[year]) {
         stats.byYear[year] = 0;
       }
       stats.byYear[year]++;
-
+      if(email.size == null){
+        throw new Error(`Email size is null for email ID: ${email.id}`);
+      }
       if (email.size < 102400) {
         stats.bySize.small++;
       } else if (email.size < 1048576) {
