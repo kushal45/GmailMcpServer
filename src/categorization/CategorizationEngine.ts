@@ -1,7 +1,9 @@
 import { DatabaseManager } from '../database/DatabaseManager.js';
 import { CacheManager } from '../cache/CacheManager.js';
-import { EmailIndex, CategorizeOptions, EmailStatistics } from '../types/index.js';
+import { EmailIndex, CategorizeOptions, EmailStatistics, PriorityCategory } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { LabelsType ,Labels} from './types.js';
+
 
 export class CategorizationEngine {
   private databaseManager: DatabaseManager;
@@ -68,23 +70,23 @@ export class CategorizationEngine {
     }
   }
 
-  private determineCategory(email: EmailIndex): 'high' | 'medium' | 'low' {
+  private determineCategory(email: EmailIndex): PriorityCategory  {
     const subject = email.subject.toLowerCase();
     const sender = email.sender.toLowerCase();
     const snippet = email.snippet.toLowerCase();
     
     // Check for high priority indicators
     if (this.isHighPriority(subject, sender, snippet, email)) {
-      return 'high';
+      return PriorityCategory.HIGH;
     }
     
     // Check for low priority indicators
     if (this.isLowPriority(subject, sender, snippet, email)) {
-      return 'low';
+      return PriorityCategory.LOW;
     }
-    
+
     // Default to medium priority
-    return 'medium';
+    return PriorityCategory.MEDIUM;
   }
 
   private isHighPriority(subject: string, sender: string, snippet: string, email: EmailIndex): boolean {
@@ -101,10 +103,11 @@ export class CategorizationEngine {
       if (sender.includes(domain)) {
         return true;
       }
+    
     }
     
     // Check if it's a direct reply (not part of a large thread)
-    if (email.labels.includes('IMPORTANT')) {
+    if (email.labels.includes(Labels.IMPORTANT) || email.labels.includes(Labels.AUTOMATED)) {
       return true;
     }
     
@@ -124,17 +127,19 @@ export class CategorizationEngine {
     }
     
     // Check if from no-reply addresses
-    if (sender.includes('no-reply') || sender.includes('noreply')) {
+    if (sender.includes(Labels.NO_REPLY) || sender.includes('noreply')) {
       return true;
     }
     
     // Check for promotional labels
-    const promotionalLabels = ['PROMOTIONS', 'SPAM', 'CATEGORY_PROMOTIONS'];
-    for (const label of promotionalLabels) {
-      if (email.labels.includes(label)) {
+    const promotionalLabelSet = new Set(['PROMOTIONS', 'SPAM', 'CATEGORY_PROMOTIONS']);
+    const emailLabelsSet = new Set(email.labels);
+    for (const label of promotionalLabelSet) {
+      if (emailLabelsSet.has(label)) {
         return true;
       }
     }
+    
     
     // Large size with attachments might indicate newsletters
     if (email.size > 1048576 && email.hasAttachments) {

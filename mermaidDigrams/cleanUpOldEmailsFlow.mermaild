@@ -1,44 +1,72 @@
 sequenceDiagram
     participant Client as MCP Client
     participant Server as Gmail MCP Server
+    participant JobQueue as Job Queue
+    participant CleanupWorker as Cleanup Worker
     participant SearchEngine as Search Engine
     participant ArchiveManager as Archive Manager
     participant ExportManager as Export Manager
     participant DeleteManager as Delete Manager
     participant LocalCacheDB as Local Cache DB
     participant ExternalStorage as External Storage
+    participant JobStatusStore as Job Status Store
 
-    Client->>Server: Call tool: search_emails (year_range: {end: 2022}, size_range: {min: 5242880})
+    %% Search Emails Flow
+    Client->>Server: Call tool - search_emails (year_range: {end: 2022}, size_range: {min: 5242880})
     Server->>SearchEngine: Process Search Query
     SearchEngine->>LocalCacheDB: Query Email Index for Criteria
     LocalCacheDB-->>SearchEngine: Matching Email IDs
     SearchEngine-->>Server: Search Results (list of email IDs)
     Server-->>Client: Search Results Success
 
-    Client->>Server: Call tool: archive_emails (year: 2022, size_threshold: 5242880, method: "export", export_format: "mbox")
-    Server->>ArchiveManager: Initiate Archiving Process
-    ArchiveManager->>LocalCacheDB: Retrieve Email Details for Archiving
+    %% Archive Emails Flow
+    Client->>Server: Call tool - archive_emails (year: 2022, size_threshold: 5242880, method: "export", export_format: "mbox")
+    Server->>JobQueue: Submit Archive Emails job
+    JobQueue-->>Server: Job ID
+    Server-->>Client: Job Accepted (Job ID J456)
+
+    loop Poll Archive Job Status
+        Client->>Server: get_job_status (Job ID J456)
+        Server->>JobStatusStore: Query Job Status
+        JobStatusStore-->>Server: Current Job Status
+        Server-->>Client: Job Status Update
+    end
+
+    CleanupWorker->>JobQueue: Pick up Archive Job (J456)
+    CleanupWorker->>JobStatusStore: Update Status: IN_PROGRESS
+    CleanupWorker->>ArchiveManager: Start Archiving
+    ArchiveManager->>LocalCacheDB: Retrieve Email Details
     LocalCacheDB-->>ArchiveManager: Email Details
     ArchiveManager->>ExportManager: Export Emails
-    ExportManager->>ExternalStorage: Write MBOX file
+    ExportManager->>ExternalStorage: Write MBOX File
     ExternalStorage-->>ExportManager: Export Complete
     ExportManager-->>ArchiveManager: Export Status (file_path)
     ArchiveManager->>LocalCacheDB: Update Archive Index
     LocalCacheDB-->>ArchiveManager: Archive Index Updated
-    ArchiveManager-->>Server: Archiving Report (archived count, location)
-    Server-->>Client: Archiving Success
+    ArchiveManager-->>CleanupWorker: Archiving Report
+    CleanupWorker->>JobStatusStore: Update Status: COMPLETED (with report)
 
-    Client->>Server: Call tool: delete_emails (year: 2022, size_threshold: 5242880, confirm: true)
-    Server->>DeleteManager: Initiate Deletion Process
-    DeleteManager->>LocalCacheDB: Identify Emails for Deletion (based on criteria)
+    %% Delete Emails Flow
+    Client->>Server: Call tool - delete_emails (year: 2022, size_threshold: 5242880, confirm: true)
+    Server->>JobQueue: Submit Delete Emails job
+    JobQueue-->>Server: Job ID
+    Server-->>Client: Job Accepted (Job ID J789)
+
+    loop Poll Delete Job Status
+        Client->>Server: get_job_status (Job ID J789)
+        Server->>JobStatusStore: Query Job Status
+        JobStatusStore-->>Server: Current Job Status
+        Server-->>Client: Job Status Update
+    end
+
+    CleanupWorker->>JobQueue: Pick up Delete Job (J789)
+    CleanupWorker->>JobStatusStore: Update Status: IN_PROGRESS
+    CleanupWorker->>DeleteManager: Start Deletion
+    DeleteManager->>LocalCacheDB: Identify Emails to Delete
     LocalCacheDB-->>DeleteManager: Email IDs to Delete
-    DeleteManager->>DeleteManager: Apply Safe Delete Logic (confirmation check)
-    DeleteManager->>Server: Request Confirmation
-    Server-->>Client: Request User Confirmation
-    Client->>Server: User Confirms Deletion
-    Server->>DeleteManager: Confirmation Received
-    DeleteManager->>DeleteManager: Perform Batch Delete (via Gmail API)
-    DeleteManager->>LocalCacheDB: Update Email Index (remove deleted entries)
+    DeleteManager->>DeleteManager: Safe Delete Logic
+    DeleteManager->>DeleteManager: Perform Batch Delete (Gmail API)
+    DeleteManager->>LocalCacheDB: Update Index (remove entries)
     LocalCacheDB-->>DeleteManager: Index Updated
-    DeleteManager-->>Server: Deletion Report (deleted count)
-    Server-->>Client: Deletion Success
+    DeleteManager-->>CleanupWorker: Deletion Report
+    CleanupWorker->>JobStatusStore: Update Status: COMPLETED (with report)

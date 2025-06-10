@@ -1,19 +1,50 @@
 sequenceDiagram
     participant Client as MCP Client
     participant Server as Gmail MCP Server
+    participant JobQueue as Job Queue
+    participant ExportWorker as Export Worker
     participant ExportManager as Export Manager
     participant LocalCacheDB as Local Cache DB
-    participant GmailAPI as Gmail API Client
-    participant ExternalStorage as External Storage (Local/Cloud)
+    participant GmailAPIClient as Gmail API Client
+    participant ExternalStorage as External Storage Provider
+    participant Provider as Specific Storage Provider
+    participant JobStatusStore as Job Status Store
 
-    Client->>Server: Call tool: export_emails (search_criteria, format, include_attachments, output_path, cloud_upload)
-    Server->>ExportManager: Initiate Email Export
-    ExportManager->>LocalCacheDB: Retrieve Email IDs matching search_criteria (if provided)
-    LocalCacheDB-->>ExportManager: Matching Email IDs
-    ExportManager->>GmailAPI: Fetch Full Email Content & Attachments for Export (for each email ID)
-    GmailAPI-->>ExportManager: Full Email Data
+    %% Client initiates export
+    Client->>Server: Call tool: export_emails(criteria, format, include_attachments, path, cloud_upload)
+    Server->>JobQueue: Submit "Export Emails" job
+    JobQueue-->>Server: Return Job ID (J999)
+    Server-->>Client: Job Accepted (Job ID: J999)
+
+    %% Client polls for job status
+    loop Poll for Export Job Status
+        Client->>Server: get_job_status (J999)
+        Server->>JobStatusStore: Query Job Status
+        JobStatusStore-->>Server: Current Status
+        Server-->>Client: Status Update
+    end
+
+    %% Job picked and processed
+    ExportWorker->>JobQueue: Pick up Export Emails job (J999)
+    ExportWorker->>JobStatusStore: Update Status: IN_PROGRESS
+    ExportWorker->>ExportManager: Start Export Process
+
+    %% Email collection
+    ExportManager->>LocalCacheDB: Get Email IDs (matching criteria)
+    LocalCacheDB-->>ExportManager: Email ID List
+    ExportManager->>GmailAPIClient: Fetch Emails & Attachments
+    GmailAPIClient->>GmailAPIClient: Interact with Gmail API
+    GmailAPIClient-->>ExportManager: Full Email Data
+
+    %% Email formatting
     ExportManager->>ExportManager: Format Emails (mbox/json/csv)
+
+    %% Export to storage
     ExportManager->>ExternalStorage: Write Exported Data
-    ExternalStorage-->>ExportManager: Export Complete
-    ExportManager-->>Server: Export Report (exported count, file_path, size)
-    Server-->>Client: Export Success
+    ExternalStorage->>Provider: Upload to Chosen Provider
+    Provider-->>ExternalStorage: Upload Complete
+    ExternalStorage-->>ExportManager: Export Status
+
+    %% Wrap-up
+    ExportManager-->>ExportWorker: Export Report
+    ExportWorker->>JobStatusStore: Update Status: COMPLETED (with report)

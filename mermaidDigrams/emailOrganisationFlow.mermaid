@@ -1,35 +1,65 @@
 sequenceDiagram
     participant Client as MCP Client
     participant Server as Gmail MCP Server
+    participant JobQueue as Job Queue
+    participant CategorizationWorker as Categorization Worker
     participant EmailFetcher as Email Fetcher
     participant CategorizationEngine as Categorization Engine
     participant ImportanceAnalyzer as Importance Analyzer
-    participant DateSizeAnalyzer as Date/Size Analyzer
+    participant DateSizeAnalyzer as Date_Size Analyzer
+    participant LabelClassifier as Label Classifier
     participant CacheManager as Cache Manager
     participant GmailAPI as Gmail API Client
     participant LocalCacheDB as Local Cache DB
+    participant JobStatusStore as Job Status Store
 
+    %% Authentication
     Client->>Server: Call tool: authenticate
     Server-->>Client: Authentication Success
 
+    %% Categorization Request
     Client->>Server: Call tool: categorize_emails (force_refresh: true)
-    Server->>CategorizationEngine: Request Email Categorization
+    Server->>JobQueue: Submit "Categorize Emails" job
+    JobQueue-->>Server: Job ID
+    Server-->>Client: Job Accepted (Job ID: J123)
+
+    %% Job Polling
+    loop Poll for Job Status
+        Client->>Server: get_job_status (Job ID: J123)
+        Server->>JobStatusStore: Query Job Status
+        JobStatusStore-->>Server: Job Status ("PENDING", "IN_PROGRESS", etc.)
+        Server-->>Client: Job Status Update
+    end
+
+    %% Categorization Worker Flow
+    CategorizationWorker->>JobQueue: Pick up job J123
+    CategorizationWorker->>JobStatusStore: Update Status: IN_PROGRESS
+    CategorizationWorker->>CategorizationEngine: Start Email Categorization
+
+    %% Fetch Emails
     CategorizationEngine->>EmailFetcher: Fetch All Emails
-    EmailFetcher->>GmailAPI: Request Emails (batch processing)
+    EmailFetcher->>GmailAPI: Request Emails (batch)
     GmailAPI-->>EmailFetcher: Email Data
-    EmailFetcher-->>CategorizationEngine: Raw Email Data
+    EmailFetcher-->>CategorizationEngine: Raw Email Data (w/ Gmail Labels)
+
+    %% Analyze Importance
     CategorizationEngine->>ImportanceAnalyzer: Analyze Importance
-    CategorizationEngine->>DateSizeAnalyzer: Analyze Date and Size
-    CategorizationEngine->>CacheManager: Store Categorized Email Metadata
+    ImportanceAnalyzer-->>CategorizationEngine: Importance Level
+
+    %% Analyze Date and Size
+    CategorizationEngine->>DateSizeAnalyzer: Analyze Date & Size
+    DateSizeAnalyzer-->>CategorizationEngine: Date/Size Categories
+
+    %% Label Classification
+    CategorizationEngine->>LabelClassifier: Classify Labels
+    LabelClassifier-->>CategorizationEngine: Label Types
+
+    %% Store Metadata
+    CategorizationEngine->>CacheManager: Store Categorized Metadata
     CacheManager->>LocalCacheDB: Persist Metadata
     LocalCacheDB-->>CacheManager: Metadata Stored
-    CacheManager-->>CategorizationEngine: Categorization Complete
-    CategorizationEngine-->>Server: Categorization Report (processed, categories)
-    Server-->>Client: Categorization Success
+    CacheManager-->>CategorizationEngine: Storage Confirmation
 
-    Client->>Server: Call tool: get_email_stats (group_by: "all")
-    Server->>CategorizationEngine: Request Email Statistics
-    CategorizationEngine->>LocalCacheDB: Retrieve Categorized Email Metadata
-    LocalCacheDB-->>CategorizationEngine: Metadata
-    CategorizationEngine-->>Server: Email Statistics (grouped by all)
-    Server-->>Client: Statistics Success
+    %% Finalize
+    CategorizationEngine-->>CategorizationWorker: Categorization Results
+    CategorizationWorker->>JobStatusStore: Update Status: COMPLETED (with results)

@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant Client as MCP Client
+    participant Server as Gmail MCP Server
+    participant EmailFetcher as Email Fetcher
+    participant LocalCacheDB as Local Cache DB
+    participant GmailAPIClient as Gmail API Client
+    participant GmailAPI as Gmail API
+
+    Client->>Server: Call tool: list_emails (filters: category, year, size_range, limit, offset, etc.)
+    Server->>EmailFetcher: Request to list emails with filters
+    EmailFetcher->>LocalCacheDB: Query for email metadata matching filters (e.g., category, year, size)
+    LocalCacheDB-->>EmailFetcher: Returns matching email IDs/metadata
+
+    alt Data not fully in cache or needs refresh
+        EmailFetcher->>GmailAPIClient: Request full email content from Gmail API
+        GmailAPIClient->>GmailAPI: Fetch emails from Google's Gmail API
+        GmailAPI-->>GmailAPIClient: Email data from Google
+        GmailAPIClient-->>EmailFetcher: Full email data
+        EmailFetcher->>LocalCacheDB: Update cache with new/refreshed email metadata (optional, for future queries)
+        LocalCacheDB-->>EmailFetcher: Cache updated (optional)
+    end
+
+    EmailFetcher->>EmailFetcher: Apply pagination (limit, offset) and format results
+    EmailFetcher-->>Server: Formatted email list and total count
+    Server-->>Client: Returns emails and total count

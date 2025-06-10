@@ -25,10 +25,18 @@ export interface EmailMessage {
   internalDate: string;
 }
 
+
+export const PriorityCategory = {
+    HIGH: 'high',
+    MEDIUM: 'medium',
+    LOW: 'low'
+} as const;
+export type PriorityCategory = typeof PriorityCategory[keyof typeof PriorityCategory];
+
 export interface EmailIndex {
   id: string;
   threadId: string;
-  category: 'high' | 'medium' | 'low';
+  category: PriorityCategory;
   subject: string;
   sender: string;
   recipients: string[];
@@ -45,7 +53,7 @@ export interface EmailIndex {
 
 export interface SearchCriteria {
   query?: string;
-  category?: 'high' | 'medium' | 'low';
+  category?: PriorityCategory;
   yearRange?: { start?: number; end?: number };
   sizeRange?: { min?: number; max?: number };
   sender?: string;
@@ -58,7 +66,7 @@ export interface ArchiveRule {
   id: string;
   name: string;
   criteria: {
-    category?: 'high' | 'medium' | 'low';
+    category?: PriorityCategory;
     olderThanDays?: number;
     sizeGreaterThan?: number;
     labels?: string[];
@@ -148,7 +156,7 @@ export interface CategorizeOptions {
 
 export interface ArchiveOptions {
   searchCriteria?: SearchCriteria;
-  category?: 'high' | 'medium' | 'low';
+  category?: PriorityCategory;
   year?: number;
   olderThanDays?: number;
   method: 'gmail' | 'export';
