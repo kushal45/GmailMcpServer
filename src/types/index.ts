@@ -59,7 +59,7 @@ export interface EmailIndex {
 
 export interface SearchCriteria {
   query?: string;
-  category?: PriorityCategory;
+  category?: PriorityCategory | null;
   year?: number;
   yearRange?: { start?: number; end?: number };
   sizeRange?: { min?: number; max?: number };

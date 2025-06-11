@@ -13,6 +13,8 @@ export const Labels = {
     AUTOMATED: 'automated',
     NOTIFICATION: 'notification',
     UNSUBSCRIBE: 'unsubscribe',
-    OTHER: 'other'
+    OTHER: 'other',
+    CATEGORY_PROMOTIONS:"category_promotions",
+    CATEGORY_SOCIAL: "category_social",
 };
 export type LabelsType = keyof typeof Labels;

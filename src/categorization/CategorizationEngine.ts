@@ -48,7 +48,7 @@ export class CategorizationEngine {
           'deal', 'offer', 'discount', 'no-reply', 'noreply',
           'automated', 'notification'] },
         { type: 'noReply' },
-        { type: 'label', labels: ['PROMOTIONS', 'SPAM', 'CATEGORY_PROMOTIONS'] },
+        { type: 'label', labels: [Labels.PROMOTIONAL, Labels.SPAM, Labels.CATEGORY_PROMOTIONS,Labels.CATEGORY_SOCIAL] },
         { type: 'largeAttachment', minSize: 1048576 },
       ]
     };
@@ -173,10 +173,10 @@ export class CategorizationEngine {
         year: options.year
       });
     } else {
-      // Get only uncategorized emails
+      // Get only uncategorized emails (category IS NULL)
       return await this.databaseManager.searchEmails({
         year: options.year,
-        category: undefined
+        category: null
       });
     }
   }

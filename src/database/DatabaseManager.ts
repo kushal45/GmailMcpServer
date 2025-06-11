@@ -244,7 +244,9 @@ export class DatabaseManager {
     let sql = 'SELECT * FROM email_index WHERE 1=1';
     const params: any[] = [];
 
-    if (criteria?.category) {
+    if (criteria?.category === null) {
+      sql += ' AND category IS NULL';
+    } else if (criteria?.category) {
       sql += ' AND category = ?';
       params.push(criteria.category);
     }
