@@ -181,7 +181,7 @@ export class DeleteManager {
     const emails = await this.databaseManager.searchEmails({ archived: false });
 
     for (const email of emails) {
-      stats.byCategory[email.category]++;
+      stats.byCategory[email?.category??"high"]++;
       
       const year = email.year || new Date().getFullYear();
       if (!stats.byYear[year]) {

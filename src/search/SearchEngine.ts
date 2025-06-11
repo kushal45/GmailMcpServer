@@ -1,6 +1,6 @@
 import { DatabaseManager } from '../database/DatabaseManager.js';
 import { EmailFetcher } from '../email/EmailFetcher.js';
-import { EmailIndex, SearchCriteria, SavedSearch } from '../types/index.js';
+import { EmailIndex, SearchCriteria, SavedSearch, SearchEngineCriteria } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 export class SearchEngine {
@@ -12,15 +12,27 @@ export class SearchEngine {
     this.emailFetcher = emailFetcher;
   }
 
-  async search(criteria: SearchCriteria & { limit?: number }): Promise<{ emails: EmailIndex[], total: number }> {
+  async search(criteria: SearchEngineCriteria): Promise<{ emails: EmailIndex[], total: number }> {
     logger.info('Searching emails', { criteria });
 
     try {
       // First search in local database
-      const dbResults = await this.databaseManager.searchEmails({
+      let dbResults = await this.databaseManager.searchEmails({
         ...criteria,
         limit: criteria.limit || 50
       });
+
+      // Filter by labels if specified
+      if (criteria.labels && criteria.labels.length > 0) {
+        dbResults = dbResults.filter(email =>
+          Array.isArray(email.labels) && criteria.labels!.every(label => email.labels!.includes(label))
+        );
+      }
+
+      // Filter by hasAttachments if specified
+      if (typeof criteria.hasAttachments === 'boolean') {
+        dbResults = dbResults.filter(email => email.hasAttachments === criteria.hasAttachments);
+      }
 
       // If we have a text query, we need to filter further
       if (criteria.query) {

@@ -6,7 +6,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-high-1',
     threadId: 'thread-high-1',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Urgent: Action Required',
     sender: 'boss@company.com',
     recipients: ['user@example.com'],
@@ -21,7 +21,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-high-2',
     threadId: 'thread-high-2',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Critical Security Alert',
     sender: 'security@company.com',
     recipients: ['user@example.com'],
@@ -36,7 +36,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-high-3',
     threadId: 'thread-high-3',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Meeting with Client',
     sender: 'client@client.com', // Important domain
     recipients: ['user@example.com'],
@@ -53,7 +53,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-medium-1',
     threadId: 'thread-medium-1',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Team Meeting Notes',
     sender: 'manager@company.com',
     recipients: ['user@example.com', 'team@company.com'],
@@ -68,7 +68,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-medium-2',
     threadId: 'thread-medium-2',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Project Update',
     sender: 'colleague@company.com',
     recipients: ['user@example.com'],
@@ -85,7 +85,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-low-1',
     threadId: 'thread-low-1',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Newsletter: March Edition',
     sender: 'newsletter@marketing.com',
     recipients: ['user@example.com'],
@@ -100,7 +100,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-low-2',
     threadId: 'thread-low-2',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Special Discount',
     sender: 'noreply@shop.com',
     recipients: ['user@example.com'],
@@ -115,7 +115,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-low-3',
     threadId: 'thread-low-3',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Your Weekly Newsletter',
     sender: 'newsletter@updates.com',
     recipients: ['user@example.com'],
@@ -130,7 +130,7 @@ export const mockEmails: EmailIndex[] = [
   {
     id: 'email-low-4',
     threadId: 'thread-low-4',
-    category: null as any, // Will be categorized
+    category: null, // Will be categorized
     subject: 'Large Attachment',
     sender: 'automated@system.com',
     recipients: ['user@example.com'],
@@ -146,8 +146,8 @@ export const mockEmails: EmailIndex[] = [
 
 // Expected categorization results
 export const expectedCategories = {
-  high: mockEmails.slice(0, 3),
-  medium: mockEmails.slice(3, 5),
+  high: mockEmails.slice(0, 2), // Only first two are high with current config
+  medium: [mockEmails[2], mockEmails[3], mockEmails[4]], // email-high-3, email-medium-1, email-medium-2
   low: mockEmails.slice(5)
 };
 

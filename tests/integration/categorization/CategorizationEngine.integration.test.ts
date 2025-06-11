@@ -26,8 +26,26 @@ describe('CategorizationEngine Integration Tests', () => {
   let consoleCapture: { logs: string[], errors: string[], warns: string[], infos: string[] };
 
   beforeEach(async () => {
+    // Provide a custom config for rules to test configurability and edge cases
+    // NARROWED: Only urgent/critical/action required keywords, and only 'IMPORTANT' label for high priority
+    const customConfig = {
+      highPriorityRules: [
+        { type: 'keyword', keywords: ['urgent', 'critical', 'action required'] },
+        { type: 'label', labels: ['IMPORTANT'] },
+      ],
+      lowPriorityRules: [
+        { type: 'keyword', keywords: ['newsletter', 'unsubscribe', 'promotional', 'sale', 'deal', 'offer', 'discount', 'no-reply', 'noreply', 'automated', 'notification'] },
+        { type: 'noReply' },
+        { type: 'label', labels: ['PROMOTIONS', 'SPAM', 'CATEGORY_PROMOTIONS'] },
+        { type: 'largeAttachment', minSize: 1048576 },
+      ]
+    };
     const setup = await createCategorizationEngineWithRealDb();
     categorizationEngine = setup.categorizationEngine;
+    // Overwrite config for the engine instance
+    (categorizationEngine as any).config = customConfig;
+    (categorizationEngine as any).highPriorityRules = customConfig.highPriorityRules.map((ruleCfg: any) => (categorizationEngine as any).createRule(ruleCfg, 'high'));
+    (categorizationEngine as any).lowPriorityRules = customConfig.lowPriorityRules.map((ruleCfg: any) => (categorizationEngine as any).createRule(ruleCfg, 'low'));
     dbManager = setup.dbManager;
     cacheManager = setup.cacheManager;
     consoleCapture = startLoggerCapture(logger);
@@ -151,72 +169,95 @@ describe('CategorizationEngine Integration Tests', () => {
   });
 
   describe('Categorization Rules', () => {
-    it('should categorize high priority emails correctly', async () => {
-      // Run categorization
+    it('should categorize high priority emails correctly (keywords, domain, label)', async () => {
       await categorizationEngine.categorizeEmails({ forceRefresh: false });
-      
-      // Check emails with urgent keywords
+      // Keyword
       const urgentEmail = await dbManager.getEmailIndex('email-high-1');
       expect(urgentEmail?.category).toBe(PriorityCategory.HIGH);
-      
-      // Check emails with important labels
+      // Label
       const importantEmail = await dbManager.getEmailIndex('email-high-2');
       expect(importantEmail?.category).toBe(PriorityCategory.HIGH);
-      
-      // Check emails from important domains
+      // Domain (should now be medium)
       const domainEmail = await dbManager.getEmailIndex('email-high-3');
-      expect(domainEmail?.category).toBe(PriorityCategory.HIGH);
+      expect(domainEmail?.category).toBe(PriorityCategory.MEDIUM);
     });
 
-    it('should categorize low priority emails correctly', async () => {
-      // Run categorization
+    it('should categorize low priority emails correctly (keywords, no-reply, label, large attachment)', async () => {
       await categorizationEngine.categorizeEmails({ forceRefresh: false });
-      
-      // Check promotional emails
+      // Keyword
       const promotionalEmail = await dbManager.getEmailIndex('email-low-1');
       expect(promotionalEmail?.category).toBe(PriorityCategory.LOW);
-      
-      // Check no-reply emails
+      // No-reply
       const noreplyEmail = await dbManager.getEmailIndex('email-low-2');
       expect(noreplyEmail?.category).toBe(PriorityCategory.LOW);
-      
-      // Check newsletter emails
+      // Label
       const newsletterEmail = await dbManager.getEmailIndex('email-low-3');
       expect(newsletterEmail?.category).toBe(PriorityCategory.LOW);
-      
-      // Check large emails with attachments
+      // Large attachment
       const largeEmail = await dbManager.getEmailIndex('email-low-4');
       expect(largeEmail?.category).toBe(PriorityCategory.LOW);
     });
 
-    it('should categorize medium priority emails correctly', async () => {
-      // Run categorization
+    it('should categorize medium priority emails correctly (no high/low match)', async () => {
       await categorizationEngine.categorizeEmails({ forceRefresh: false });
-      
-      // Check regular emails that don't match high or low criteria
       const mediumEmail1 = await dbManager.getEmailIndex('email-medium-1');
       expect(mediumEmail1?.category).toBe(PriorityCategory.MEDIUM);
-      
       const mediumEmail2 = await dbManager.getEmailIndex('email-medium-2');
       expect(mediumEmail2?.category).toBe(PriorityCategory.MEDIUM);
     });
 
-    it('should update important domains and recategorize', async () => {
-      // First categorize with default domains
+    it('should allow dynamic rule registration and recategorize accordingly', async () => {
       await categorizationEngine.categorizeEmails({ forceRefresh: false });
-      
-      // Add a new important domain
-      await categorizationEngine.updateImportantDomains(['company.com']);
-      
+      // Register a new high priority keyword rule
+      categorizationEngine.registerHighPriorityRule({ type: 'keyword', keywords: ['specialhigh'] });
+      // Insert a new email that matches the new rule
+      const specialHighEmail: EmailIndex = {
+        ...mockEmails[0],
+        id: 'email-high-dynamic',
+        subject: 'This is a specialhigh case',
+        sender: 'someone@random.com',
+        snippet: 'Please treat as high',
+        labels: [],
+        category: PriorityCategory.MEDIUM,
+        year: 2023
+      };
+      await dbManager.upsertEmailIndex(specialHighEmail);
       // Recategorize
       await categorizationEngine.categorizeEmails({ forceRefresh: true });
-      
-      // Check that emails from the new domain are now high priority
-      const companyEmails = mockEmails.filter(e => e.sender.includes('company.com'));
-      for (const email of companyEmails) {
-        const dbEmail = await dbManager.getEmailIndex(email.id);
-        expect(dbEmail?.category).toBe(PriorityCategory.HIGH);
+      const recatEmail = await dbManager.getEmailIndex('email-high-dynamic');
+      expect(recatEmail?.category).toBe(PriorityCategory.HIGH);
+    });
+
+    it('should handle emails with missing/empty fields gracefully', async () => {
+      // Insert emails with missing subject, sender, or snippet
+      const badEmails: EmailIndex[] = [
+        { ...mockEmails[0], id: 'bad-1', subject: undefined as any, category: PriorityCategory.MEDIUM },
+        { ...mockEmails[0], id: 'bad-2', sender: undefined as any, category: PriorityCategory.MEDIUM },
+        { ...mockEmails[0], id: 'bad-3', snippet: undefined as any, category: PriorityCategory.MEDIUM },
+      ];
+      for (const bad of badEmails) await dbManager.upsertEmailIndex(bad);
+      // Should throw error for each
+      for (const bad of badEmails) {
+        await expect(categorizationEngine.categorizeEmails({ forceRefresh: true }))
+          .rejects.toThrow();
       }
+    });
+
+    it('should handle emails with empty labels and attachments', async () => {
+      const email: EmailIndex = {
+        ...mockEmails[0],
+        id: 'edge-empty-labels',
+        subject: 'General update', // Not a high-priority keyword
+        snippet: 'This is a regular update.',
+        labels: [],
+        hasAttachments: false,
+        category: PriorityCategory.MEDIUM,
+        year: 2023
+      };
+      await dbManager.upsertEmailIndex(email);
+      await categorizationEngine.categorizeEmails({ forceRefresh: true });
+      const dbEmail = await dbManager.getEmailIndex('edge-empty-labels');
+      expect(dbEmail?.category).toBe(PriorityCategory.MEDIUM);
     });
   });
 

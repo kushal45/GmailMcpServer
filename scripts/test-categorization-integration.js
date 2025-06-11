@@ -6,12 +6,12 @@
  * and can be run directly to test the categorization functionality.
  */
 
-import { DatabaseManager } from '../src/database/DatabaseManager.js';
-import { CacheManager } from '../src/cache/CacheManager.js';
-import { CategorizationEngine } from '../src/categorization/CategorizationEngine.js';
+import { DatabaseManager } from '../build/database/DatabaseManager.js';
+import { CacheManager } from '../build/cache/CacheManager.js';
+import { CategorizationEngine } from '../build/categorization/CategorizationEngine.js';
 import { mockEmails } from '../tests/integration/categorization/fixtures/mockEmails.js';
-import { logger } from '../src/utils/logger.js';
-import { PriorityCategory } from '../src/types/index.js';
+import { logger } from '../build/utils/logger.js';
+import { PriorityCategory } from '../build/types/index.js';
 
 // Set test mode to use in-memory database
 process.env.NODE_ENV = 'test';

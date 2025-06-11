@@ -91,9 +91,9 @@ describe('SearchEngine', () => {
 
     it('should search in sender field', async () => {
       const emails = [
-        { ...mockEmailIndex, id: '1', sender: 'john@example.com' },
-        { ...mockEmailIndex, id: '2', sender: 'jane@example.com' },
-        { ...mockEmailIndex, id: '3', sender: 'bob@test.com' }
+        { ...mockEmailIndex, id: '1', sender: 'john@example.com', recipients: ['recipient1@foo.com'], subject: 'A', snippet: 'B' },
+        { ...mockEmailIndex, id: '2', sender: 'jane@example.com', recipients: ['recipient2@foo.com'], subject: 'C', snippet: 'D' },
+        { ...mockEmailIndex, id: '3', sender: 'bob@test.com', recipients: ['recipient3@foo.com'], subject: 'E', snippet: 'F' }
       ];
       mockDatabaseManager.searchEmails.mockResolvedValue(emails);
 

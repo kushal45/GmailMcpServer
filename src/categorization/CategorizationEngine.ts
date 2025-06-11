@@ -5,31 +5,91 @@ import { logger } from '../utils/logger.js';
 import { LabelsType ,Labels} from './types.js';
 
 
+// --- Priority rule config types ---
+interface PriorityRuleConfig {
+  type: string;
+  [key: string]: any;
+}
+
+interface CategorizationConfig {
+  highPriorityRules: PriorityRuleConfig[];
+  lowPriorityRules: PriorityRuleConfig[];
+}
+
+// --- Rule type for modular priority logic ---
+type PriorityRule = (ctx: { subject: string, sender: string, snippet: string, email: EmailIndex }) => boolean;
+
 export class CategorizationEngine {
   private databaseManager: DatabaseManager;
   private cacheManager: CacheManager;
   
-  // Keywords for importance detection
-  private readonly HIGH_PRIORITY_KEYWORDS = [
-    'urgent', 'asap', 'important', 'critical', 'deadline',
-    'action required', 'immediate', 'priority', 'emergency'
-  ];
-  
-  private readonly LOW_PRIORITY_KEYWORDS = [
-    'newsletter', 'unsubscribe', 'promotional', 'sale',
-    'deal', 'offer', 'discount', 'no-reply', 'noreply',
-    'automated', 'notification'
-  ];
-  
-  // Important domains (customize based on user needs)
-  private readonly IMPORTANT_DOMAINS = [
-    'company.com', // Add your company domain
-    'client.com',  // Add important client domains
-  ];
+  // --- Modular rule arrays ---
+  private highPriorityRules: PriorityRule[] = [];
+  private lowPriorityRules: PriorityRule[] = [];
+  private config: CategorizationConfig;
+  private IMPORTANT_DOMAINS: string[] = [];
 
-  constructor(databaseManager: DatabaseManager, cacheManager: CacheManager) {
+  constructor(databaseManager: DatabaseManager, cacheManager: CacheManager, config?: CategorizationConfig) {
     this.databaseManager = databaseManager;
     this.cacheManager = cacheManager;
+
+    // Default config if not provided
+    this.config = config || {
+      highPriorityRules: [
+        { type: 'keyword', keywords: [
+          'urgent', 'asap', 'important', 'critical', 'deadline',
+          'action required', 'immediate', 'priority', 'emergency'] },
+        { type: 'domain', domains: ['company.com', 'client.com'] },
+        { type: 'label', labels: [Labels.IMPORTANT, Labels.AUTOMATED] },
+      ],
+      lowPriorityRules: [
+        { type: 'keyword', keywords: [
+          'newsletter', 'unsubscribe', 'promotional', 'sale',
+          'deal', 'offer', 'discount', 'no-reply', 'noreply',
+          'automated', 'notification'] },
+        { type: 'noReply' },
+        { type: 'label', labels: ['PROMOTIONS', 'SPAM', 'CATEGORY_PROMOTIONS'] },
+        { type: 'largeAttachment', minSize: 1048576 },
+      ]
+    };
+
+    this.highPriorityRules = this.config.highPriorityRules.map(ruleCfg => this.createRule(ruleCfg, 'high'));
+    this.lowPriorityRules = this.config.lowPriorityRules.map(ruleCfg => this.createRule(ruleCfg, 'low'));
+  }
+
+  // --- Factory for rule functions ---
+  private createRule(ruleCfg: PriorityRuleConfig, priority: 'high' | 'low'): PriorityRule {
+    switch (ruleCfg.type) {
+      case 'keyword':
+        return ({ subject, snippet }) => {
+          const content = `${subject} ${snippet}`;
+          return ruleCfg.keywords.some((k: string) => content.includes(k));
+        };
+      case 'domain':
+        return ({ sender }) => ruleCfg.domains.some((d: string) => sender.includes(d));
+      case 'label':
+        return ({ email }) => {
+          if (!email.labels) return false;
+          return ruleCfg.labels.some((l: string) => (email.labels ?? []).includes(l));
+        };
+      case 'noReply':
+        return ({ sender }) => sender.includes(Labels.NO_REPLY) || sender.includes('noreply');
+      case 'largeAttachment':
+        return ({ email }) => (email.size ?? 0) > (ruleCfg.minSize ?? 1048576) && !!email.hasAttachments;
+      default:
+        // Unknown rule type, always false
+        return () => false;
+    }
+  }
+
+  // --- Allow dynamic rule registration ---
+  public registerHighPriorityRule(ruleCfg: PriorityRuleConfig) {
+    this.highPriorityRules.push(this.createRule(ruleCfg, 'high'));
+    this.config.highPriorityRules.push(ruleCfg);
+  }
+  public registerLowPriorityRule(ruleCfg: PriorityRuleConfig) {
+    this.lowPriorityRules.push(this.createRule(ruleCfg, 'low'));
+    this.config.lowPriorityRules.push(ruleCfg);
   }
 
   async categorizeEmails(options: CategorizeOptions): Promise<{ processed: number, categories: any }> {
@@ -83,78 +143,27 @@ export class CategorizationEngine {
     if(snippet == null){
       throw new Error('Email snippet is missing');
     }
+    const ctx = { subject, sender, snippet, email };
     // Check for high priority indicators
-    if (this.isHighPriority(subject, sender, snippet, email)) {
+    if (this.isHighPriority(ctx)) {
       return PriorityCategory.HIGH;
     }
-    
     // Check for low priority indicators
-    if (this.isLowPriority(subject, sender, snippet, email)) {
+    if (this.isLowPriority(ctx)) {
       return PriorityCategory.LOW;
     }
-
     // Default to medium priority
     return PriorityCategory.MEDIUM;
   }
 
-  private isHighPriority(subject: string, sender: string, snippet: string, email: EmailIndex): boolean {
-    // Check for urgent keywords
-    const content = `${subject} ${snippet}`;
-    for (const keyword of this.HIGH_PRIORITY_KEYWORDS) {
-      if (content.includes(keyword)) {
-        return true;
-      }
-    }
-    
-    // Check if from important domain
-    for (const domain of this.IMPORTANT_DOMAINS) {
-      if (sender.includes(domain)) {
-        return true;
-      }
-    
-    }
-    
-    // Check if it's a direct reply (not part of a large thread)
-    if (email?.labels?.includes(Labels.IMPORTANT) || email?.labels?.includes(Labels.AUTOMATED)) {
-      return true;
-    }
-    
-    // Check if sender appears frequently (indicating important contact)
-    // This would require additional analysis of sender frequency
-    
-    return false;
+  // --- Modular rule-based high priority check ---
+  private isHighPriority(ctx: { subject: string, sender: string, snippet: string, email: EmailIndex }): boolean {
+    return this.highPriorityRules.some(rule => rule(ctx));
   }
 
-  private isLowPriority(subject: string, sender: string, snippet: string, email: EmailIndex): boolean {
-    // Check for promotional keywords
-    const content = `${subject} ${snippet}`;
-    for (const keyword of this.LOW_PRIORITY_KEYWORDS) {
-      if (content.includes(keyword)) {
-        return true;
-      }
-    }
-    
-    // Check if from no-reply addresses
-    if (sender.includes(Labels.NO_REPLY) || sender.includes('noreply')) {
-      return true;
-    }
-    
-    // Check for promotional labels
-    const promotionalLabelSet = new Set(['PROMOTIONS', 'SPAM', 'CATEGORY_PROMOTIONS']);
-    const emailLabelsSet = new Set(email.labels);
-    for (const label of promotionalLabelSet) {
-      if (emailLabelsSet.has(label)) {
-        return true;
-      }
-    }
-    
-    
-    // Large size with attachments might indicate newsletters
-    if ((email.size ?? 0) > 1048576 && email?.hasAttachments) {
-      return true;
-    }
-    
-    return false;
+  // --- Modular rule-based low priority check ---
+  private isLowPriority(ctx: { subject: string, sender: string, snippet: string, email: EmailIndex }): boolean {
+    return this.lowPriorityRules.some(rule => rule(ctx));
   }
 
   private async getEmailsForCategorization(options: CategorizeOptions): Promise<EmailIndex[]> {
@@ -167,7 +176,7 @@ export class CategorizationEngine {
       // Get only uncategorized emails
       return await this.databaseManager.searchEmails({
         year: options.year,
-        category: null
+        category: undefined
       });
     }
   }

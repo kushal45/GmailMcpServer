@@ -1,9 +1,9 @@
 import sqlite3 from 'sqlite3';
 import path from 'path';
 import fs from 'fs/promises';
-import { fileURLToPath } from 'url';
+//import { fileURLToPath } from 'url';
 import { logger } from '../utils/logger.js';
-import { EmailIndex, ArchiveRule, ArchiveRecord, SavedSearch } from '../types/index.js';
+import { EmailIndex, ArchiveRule, ArchiveRecord, SavedSearch,SearchCriteria, SearchEngineCriteria } from '../types/index.js';
 
 export class DatabaseManager {
   private db: sqlite3.Database | null = null;
@@ -11,8 +11,8 @@ export class DatabaseManager {
   private initialized: boolean = false;
 
   constructor() {
-     const __filename = fileURLToPath(import.meta.url);
-     const __dirname = path.dirname(__filename);
+    // const __filename = fileURLToPath(import.meta.url);
+     //const __dirname = path.dirname(__filename);
     // Determine the project root directory
     // Since we know this file is in src/database, we can navigate up from there
     const projectRoot = path.resolve(__dirname, '../../');
@@ -240,11 +240,11 @@ export class DatabaseManager {
     return row ? this.rowToEmailIndex(row) : null;
   }
 
-  async searchEmails(criteria: any): Promise<EmailIndex[]> {
+  async searchEmails(criteria: SearchEngineCriteria): Promise<EmailIndex[]> {
     let sql = 'SELECT * FROM email_index WHERE 1=1';
     const params: any[] = [];
 
-    if (criteria.category) {
+    if (criteria?.category) {
       sql += ' AND category = ?';
       params.push(criteria.category);
     }

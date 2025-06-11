@@ -18,8 +18,8 @@ describe('DatabaseManager', () => {
   let mockDb: any;
 
   beforeEach(() => {
-    // Mock fs.mkdir
-    (fs.mkdir as any) = jest.fn(() => Promise.resolve());
+    // Properly spy on fs.mkdir with correct return type
+    jest.spyOn(fs, 'mkdir').mockImplementation(() => Promise.resolve(undefined));
 
     // Create mock database
     mockDb = {
@@ -50,10 +50,16 @@ describe('DatabaseManager', () => {
     });
 
     dbManager = new DatabaseManager();
+    // Inject the mockDb into the dbManager instance for all tests
+    (dbManager as any).db = mockDb;
   });
 
   afterEach(() => {
     jest.clearAllMocks();
+    // If DatabaseManager ever opens a real DB connection, close it
+    if ((dbManager as any).db && typeof (dbManager as any).db.close === 'function') {
+      (dbManager as any).db.close(() => {});
+    }
   });
 
   describe('initialize', () => {
@@ -110,7 +116,7 @@ describe('DatabaseManager', () => {
         const runCall = mockDb.run.mock.calls.find((call: any) => 
           call[0].includes('INSERT OR REPLACE INTO email_index')
         );
-        expect(runCall[1][6]).toBe(mockEmailIndex.date.getTime());
+        expect(runCall[1][6]).toBe(mockEmailIndex.date!.getTime());
         expect(runCall[1][13]).toBeNull(); // archiveDate
       });
     });
@@ -141,7 +147,7 @@ describe('DatabaseManager', () => {
       it('should retrieve email by ID', async () => {
         const mockRow = {
           ...mockEmailIndex,
-          date: mockEmailIndex.date.getTime(),
+          date: mockEmailIndex.date!.getTime(),
           recipients: JSON.stringify(mockEmailIndex.recipients),
           labels: JSON.stringify(mockEmailIndex.labels),
           has_attachments: mockEmailIndex.hasAttachments ? 1 : 0,

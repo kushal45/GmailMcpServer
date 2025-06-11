@@ -21,6 +21,10 @@ describe('AuthManager', () => {
       OAuth2: jest.fn().mockReturnValue(mockOAuth2Client)
     };
     authManager = new AuthManager();
+    // Ensure the mock OAuth2 client is set on the instance for all tests
+    (authManager as any).oauth2Client = mockOAuth2Client;
+    // Mock startAuthServer to prevent real server from starting in any test
+    jest.spyOn(authManager as any, 'startAuthServer').mockImplementation(() => Promise.resolve());
   });
 
   afterEach(() => {
@@ -204,9 +208,9 @@ describe('AuthManager', () => {
     it('should include additional scopes if provided', async () => {
       const additionalScopes = ['https://www.googleapis.com/auth/drive'];
       (mockOAuth2Client.generateAuthUrl as any).mockReturnValue('https://auth.url');
-
+      // Prevent the test from starting a real server by replacing startAuthServer with a resolved Promise
+      (authManager as any).startAuthServer = () => Promise.resolve();
       await authManager.getAuthUrl(additionalScopes);
-
       expect(mockOAuth2Client.generateAuthUrl).toHaveBeenCalledWith({
         access_type: 'offline',
         scope: expect.arrayContaining([

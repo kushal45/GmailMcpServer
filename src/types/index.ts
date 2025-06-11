@@ -42,7 +42,7 @@ export type PriorityCategory = typeof PriorityCategory[keyof typeof PriorityCate
 export interface EmailIndex {
   id: string;
   threadId?: string;
-  category: PriorityCategory;
+  category?: PriorityCategory | null;
   subject?: string;
   sender?: string;
   recipients?: string[];
@@ -60,12 +60,18 @@ export interface EmailIndex {
 export interface SearchCriteria {
   query?: string;
   category?: PriorityCategory;
+  year?: number;
   yearRange?: { start?: number; end?: number };
   sizeRange?: { min?: number; max?: number };
   sender?: string;
   hasAttachments?: boolean;
   archived?: boolean;
   labels?: string[];
+  offset?: number;
+}
+
+export interface SearchEngineCriteria extends SearchCriteria {
+  limit?: number;
 }
 
 export interface ArchiveRule {
