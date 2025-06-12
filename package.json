@@ -13,7 +13,7 @@
   "scripts": {
     "setup": "node scripts/setup.js",
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
-    "test": "jest --runInBand --detectOpenHandles --forceExit",
+    "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --detectOpenHandles --forceExit",
     "test:watch": "jest --watch",
     "test:delete-integration": "node scripts/test-delete-integration.js",
     "prepare": "npm run build",

@@ -7,13 +7,11 @@ import {
   afterEach,
 } from "@jest/globals";
 import { EmailFetcher } from "../../../src/email/EmailFetcher.js";
-import { AuthManager } from "../../../src/auth/AuthManager.js";
-import { CacheManager } from "../../../src/cache/CacheManager.js";
 import { EmailIndex, PriorityCategory } from "../../../src/types/index.js";
 
 // Mock dependencies
-jest.mock("../../../src/auth/AuthManager.js");
-jest.mock("../../../src/cache/CacheManager.js");
+jest.mock("../../../build/auth/AuthManager");
+jest.mock("../../../build/cache/CacheManager");
 
 describe("EmailFetcher", () => {
   let emailFetcher: EmailFetcher;

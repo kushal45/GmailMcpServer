@@ -4,10 +4,7 @@ import { PriorityCategory } from '../../../src/types/index.js';
 import { mockGmailMessages, mockListResponse } from './fixtures/mockGmailResponses.js';
 import { createMockDatabase, createMockCache, createMockGmailClient } from '../../utils/testHelpers';
 
-// Mock dependencies
-jest.mock('../../../src/database/DatabaseManager.js');
-jest.mock('../../../src/auth/AuthManager.js');
-jest.mock('../../../src/cache/CacheManager.js');
+
 
 describe('EmailFetcher Edge Cases', () => {
   let emailFetcher: EmailFetcher;

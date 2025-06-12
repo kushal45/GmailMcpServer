@@ -7,8 +7,8 @@ import { logger } from '../utils/logger.js';
 import http from 'http';
 import { URL } from 'url';
 
-//const __filename = fileURLToPath(import.meta.url);
-//const __dirname = path.dirname(__filename);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',

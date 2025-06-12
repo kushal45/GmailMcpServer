@@ -1,6 +1,7 @@
 /** @type {import('jest').Config} */
 module.exports = {
-  preset: 'ts-jest',
+  preset: 'ts-jest/presets/default-esm',
+  extensionsToTreatAsEsm: ['.ts'],
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
@@ -13,24 +14,15 @@ module.exports = {
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
   moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1'
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^(\\.{1,2}/.*)\\.ts$': '$1',
+    '^@/(.*)$': '<rootDir>/src/$1'
   },
+  modulePaths: ['<rootDir>/src'],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
-      tsconfig: {
-        module: 'commonjs',
-        target: 'es2020',
-        lib: ['es2020'],
-        moduleResolution: 'node',
-        esModuleInterop: true,
-        allowSyntheticDefaultImports: true,
-        strict: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        resolveJsonModule: true,
-        isolatedModules: true,
-        noEmit: true
-      }
+      // Use the main tsconfig.json for ESM compatibility, do not override module settings here
+      tsconfig: 'tsconfig.json'
     }]
   },
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
@@ -38,12 +30,10 @@ module.exports = {
   verbose: true,
   globals: {
     'ts-jest': {
-      isolatedModules: true
+      isolatedModules: true,
+      useESM: true,
+      tsconfig: 'tsconfig.json'
     }
-  },
-  // Mock import.meta.url for CommonJS compatibility
-  moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1'
   },
   testEnvironmentOptions: {
     customExportConditions: ['node', 'node-addons']

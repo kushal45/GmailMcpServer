@@ -1,7 +1,7 @@
 import sqlite3 from 'sqlite3';
 import path from 'path';
 import fs from 'fs/promises';
-//import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'url';
 import { logger } from '../utils/logger.js';
 import { EmailIndex, ArchiveRule, ArchiveRecord, SavedSearch,SearchCriteria, SearchEngineCriteria } from '../types/index.js';
 
@@ -11,8 +11,8 @@ export class DatabaseManager {
   private initialized: boolean = false;
 
   constructor() {
-    // const __filename = fileURLToPath(import.meta.url);
-     //const __dirname = path.dirname(__filename);
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
     // Determine the project root directory
     // Since we know this file is in src/database, we can navigate up from there
     const projectRoot = path.resolve(__dirname, '../../');

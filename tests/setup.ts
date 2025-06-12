@@ -1,13 +1,5 @@
 import { jest } from '@jest/globals';
 
-// Mock import.meta.url for CommonJS compatibility in tests
-if (typeof global !== 'undefined') {
-  // @ts-ignore
-  global.__filename = __filename;
-  // @ts-ignore
-  global.__dirname = __dirname;
-}
-
 // Increase timeout for integration tests
 jest.setTimeout(30000);
 
@@ -31,3 +23,7 @@ afterAll(() => {
   console.error = originalConsoleError;
   console.warn = originalConsoleWarn;
 });
+
+// Remove any CJS-style exports or module.exports. Use only ESM imports/exports and globalThis for globals if needed.
+// If you need to set up globals, do it like this:
+// globalThis.myGlobal = ...;
