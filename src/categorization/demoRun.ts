@@ -1,11 +1,11 @@
-import { DatabaseManager } from './database/DatabaseManager.js';
-import { JobQueue } from './database/JobQueue.js';
-import { JobStatusStore } from './database/JobStatusStore.js';
-import { CategorizationStore } from './categorization/CategorizationStore.js';
-import { CategorizationWorker } from './categorization/CategorizationWorker.js';
-import { logger } from './utils/logger.js';
-import { CategorizationEngine } from './categorization/CategorizationEngine.js';
-import { CacheManager } from './cache/CacheManager.js';
+import { DatabaseManager } from '../database/DatabaseManager.js';
+import { JobQueue } from '../database/JobQueue.js';
+import { JobStatusStore } from '../database/JobStatusStore.js';
+import { CategorizationStore } from './CategorizationStore.js';
+import { CategorizationWorker } from './CategorizationWorker.js';
+import { logger } from '../utils/logger.js';
+import { CategorizationEngine } from './CategorizationEngine.js';
+import { CacheManager } from '../cache/CacheManager.js';
 
 // Example usage of the implemented classes
 async function main() {

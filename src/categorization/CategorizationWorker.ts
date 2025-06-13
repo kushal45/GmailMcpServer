@@ -1,10 +1,7 @@
-import { JobQueue } from '../database/JobQueue.js';
-import { JobStatusStore, JobStatus } from '../database/JobStatusStore.js';
-import { CategorizationStore } from './CategorizationStore.js';
+
+import { JobStatus,JobStatusStore,JobQueue } from '../database/index.js';
 import { logger } from '../utils/logger.js';
-import { EmailIndex, PriorityCategory } from '../types/index.js';
 import { CategorizationEngine } from './CategorizationEngine.js';
-import { DatabaseManager } from '../database/DatabaseManager.js';
 
 /**
  * Worker that processes categorization jobs from the queue
@@ -79,7 +76,8 @@ export class CategorizationWorker {
       await this.jobStatusStore.updateJobStatus(
         jobId, 
         JobStatus.IN_PROGRESS, 
-        { started_at: new Date() }
+        { started_at: new Date(),
+         }
       );
 
       try {
@@ -101,18 +99,21 @@ export class CategorizationWorker {
             JobStatus.COMPLETED,
             {
               completed_at: new Date(),
+              emailIds: [],
               results: { message: 'No emails to categorize' }
             }
           );
           this.processNextJob();
           return;
         }
+       const emailIds = categorizationResult.emails.map(email => email.id);
         // Update job status to COMPLETED
         await this.jobStatusStore.updateJobStatus(
           jobId,
           JobStatus.COMPLETED,
           {
             completed_at: new Date(),
+            emailIds,
             results: {
               processed: categorizationResult.processed,
               categorized: categorizationResult.categories,
@@ -130,6 +131,7 @@ export class CategorizationWorker {
           JobStatus.FAILED,
           {
             completed_at: new Date(),
+            emailIds: [],
             error_details: error instanceof Error ? error.message : String(error)
           }
         );

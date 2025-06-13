@@ -35,345 +35,205 @@ sequenceDiagram
     participant Logger
 
     Note over Client,Logger: Phase 1: System Initialization & Setup
-    
-    Client->>CE: new CategorizationEngine(dbManager, cacheManager, config)
+
+    Client->>CE: new CategorizationEngine()
     activate CE
-    CE->>AF: new AnalyzerFactory(dbManager, cacheManager)
+    CE->>AF: new AnalyzerFactory()
     activate AF
-    CE->>AF: createImportanceAnalyzer(config)
-    AF->>IA: new ImportanceAnalyzer(config, cacheManager, dbManager)
+    CE->>AF: createImportanceAnalyzer()
+    AF->>IA: new ImportanceAnalyzer()
     activate IA
-    
+
     IA->>IA: initializeRules()
-    loop For each rule config in config.rules
-        IA->>IA: createRuleFromConfig(ruleConfig)
-        IA->>Rules: create ImportanceRule with evaluate function
+    loop Each ruleConfig
+        IA->>Rules: create ImportanceRule
         activate Rules
         Rules-->>IA: rule instance
         deactivate Rules
     end
-    IA->>Logger: info("Rules initialized", {count: rules.length})
+    IA->>Logger: info("Rules initialized")
     AF-->>CE: importanceAnalyzer instance
-    deactivate AF
     deactivate IA
+    deactivate AF
     deactivate CE
-    
+
     Note over Client,Logger: Phase 2: Email Categorization Request
-    
-    Client->>CE: categorizeEmails(options)
+
+    Client->>CE: categorizeEmails()
     activate CE
-    CE->>DM: getEmailsForCategorization(options)
+    CE->>DM: getEmailsForCategorization()
     activate DM
     alt forceRefresh = true
-        DM->>DM: searchEmails({year: options.year})
+        DM->>DM: searchEmails(year)
     else forceRefresh = false
-        DM->>DM: searchEmails({year: options.year, category: null})
+        DM->>DM: searchEmails(year, category=null)
     end
     DM-->>CE: EmailIndex[]
     deactivate DM
-    
-    loop For each email in emails
+
+    loop Each email
         CE->>CE: determineCategory(email)
         activate CE
         CE->>CE: createAnalysisContext(email)
-        
-        Note over CE: Validate required fields
+
         alt Missing subject
-            CE->>Logger: warn("Email subject is missing")
-            CE->>CE: throw Error("Email subject is missing")
+            CE->>Logger: warn("Email subject missing")
         end
         alt Missing sender
-            CE->>Logger: warn("Email sender is missing")
-            CE->>CE: throw Error("Email sender is missing")
+            CE->>Logger: warn("Email sender missing")
         end
         alt Missing snippet
-            CE->>Logger: warn("Email snippet is missing")
-            CE->>CE: throw Error("Email snippet is missing")
+            CE->>Logger: warn("Email snippet missing")
         end
-        
+
         CE->>CE: orchestrateAnalysis(context)
-        activate CE
-        
+
         Note over Client,Logger: Phase 3: Importance Analysis Deep Dive
-        
-        alt Sequential Processing (default)
+
+        alt Sequential Processing
             CE->>IA: analyzeImportance(context)
             activate IA
-        else Parallel Processing (if enabled)
-            CE->>CE: runWithTimeout(() => IA.analyzeImportance(context), timeoutMs)
-            activate CE
-            CE->>IA: analyzeImportance(context)
+        else Parallel Processing
+            CE->>IA: analyzeImportance(context) with timeout
             activate IA
-            deactivate CE
         end
-        
-        IA->>IA: generateContextHash(context)
-        activate IA
+
+        IA->>IA: generateContextHash()
         alt keyStrategy = 'partial'
-            IA->>IA: hash = `importance:${email.id}:${subject}:${sender}`
+            IA->>IA: hash using email ID, subject, sender
         else keyStrategy = 'full'
-            IA->>IA: hash = `importance:${base64(JSON.stringify(context))}`
+            IA->>IA: hash using JSON.stringify(context)
         end
-        deactivate IA
-        
+
         alt Caching enabled
-            IA->>CM: get<ImportanceResult>(contextHash)
+            IA->>CM: get(contextHash)
             activate CM
             alt Cache hit
-                CM->>Logger: debug("Cache hit for key", contextHash)
-                CM-->>IA: cached ImportanceResult
-                IA->>Logger: debug("ImportanceAnalyzer: Cache hit")
-                IA-->>CE: cached result
-                deactivate CM
-                deactivate IA
+                CM->>Logger: debug("Cache hit")
+                CM-->>IA: cached result
+                IA->>Logger: debug("Cache hit used")
             else Cache miss
-                CM->>Logger: debug("Cache miss for key", contextHash)
+                CM->>Logger: debug("Cache miss")
                 CM-->>IA: null
-                deactivate CM
             end
+            deactivate CM
         end
-        
+
         alt Cache miss or caching disabled
-            IA->>IA: getApplicableRules(context)
-            activate IA
-            IA->>IA: return rules.sort((a, b) => b.priority - a.priority)
-            IA-->>IA: sorted ImportanceRule[]
-            deactivate IA
-            
-            Note over IA,Rules: Rule Evaluation Loop
-            loop For each rule in applicableRules
+            IA->>IA: getApplicableRules()
+            IA->>IA: sort rules by priority
+            loop Each rule
                 IA->>Rules: rule.evaluate(context)
                 activate Rules
-                Rules->>IA: evaluateRuleCondition(condition, context)
-                activate IA
-                
-                alt condition.type = 'keyword'
-                    IA->>IA: evaluateKeywordRule(condition, subject, snippet)
-                    activate IA
-                    IA->>IA: content = `${subject} ${snippet}`.toLowerCase()
-                    IA->>Logger: debug("Evaluating keyword rule", {content, keywords})
-                    loop For each keyword in condition.keywords
-                        IA->>IA: regex = new RegExp(`\\b${escapedKeyword}\\b`, 'i')
-                        IA->>IA: test regex against content
-                    end
-                    IA->>Logger: debug("Keyword matching result", {matchedKeywords})
-                    alt matchedKeywords.length > 0
-                        IA-->>IA: {matched: true, score: matchedKeywords.length * weight, reason}
-                    else
-                        IA-->>IA: {matched: false, score: 0}
-                    end
-                    deactivate IA
-                    
-                else condition.type = 'domain'
-                    IA->>IA: evaluateDomainRule(condition, sender)
-                    activate IA
-                    loop For each domain in condition.domains
-                        IA->>IA: check if sender.toLowerCase().includes(domain.toLowerCase())
-                    end
-                    alt matchedDomains.length > 0
-                        IA-->>IA: {matched: true, score: weight, reason}
-                    else
-                        IA-->>IA: {matched: false, score: 0}
-                    end
-                    deactivate IA
-                    
-                else condition.type = 'label'
-                    IA->>IA: evaluateLabelRule(condition, labels)
-                    activate IA
-                    IA->>Logger: debug("Evaluating label rule", {labels, ruleLabels})
-                    loop For each ruleLabel in condition.labels
-                        IA->>IA: check case-insensitive match in email labels
-                    end
-                    IA->>Logger: debug("Label matching result", {matchedLabels})
-                    alt matchedLabels.length > 0
-                        IA-->>IA: {matched: true, score: matchedLabels.length * weight, reason}
-                    else
-                        IA-->>IA: {matched: false, score: 0}
-                    end
-                    deactivate IA
-                    
-                else condition.type = 'noReply'
-                    IA->>IA: evaluateNoReplyRule(condition, sender)
-                    activate IA
-                    IA->>Logger: debug("Evaluating no-reply rule", {sender})
-                    IA->>IA: check sender against ['no-reply', 'noreply', 'no-reply']
-                    IA->>Logger: debug("No-reply matching result", {matched})
-                    alt matched
-                        IA-->>IA: {matched: true, score: weight, reason: "No-reply sender detected"}
-                    else
-                        IA-->>IA: {matched: false, score: 0}
-                    end
-                    deactivate IA
-                    
-                else condition.type = 'largeAttachment'
-                    IA->>IA: evaluateLargeAttachmentRule(condition, context)
-                    activate IA
-                    IA->>Logger: debug("Evaluating large attachment rule", {minSize, emailSize, hasAttachments})
-                    IA->>IA: matched = emailSize > minSize && hasAttachments
-                    IA->>Logger: debug("Large attachment matching result", {matched})
-                    alt matched
-                        IA-->>IA: {matched: true, score: weight, reason: `Large attachment: ${emailSize}MB`}
-                    else
-                        IA-->>IA: {matched: false, score: 0}
-                    end
-                    deactivate IA
-                    
-                else Unknown rule type
-                    IA->>Logger: warn("Unknown rule type", {type: condition.type})
-                    IA-->>IA: {matched: false, score: 0, reason: "Unknown rule type"}
+                alt condition = keyword
+                    IA->>IA: match keywords
+                else condition = domain
+                    IA->>IA: match domain
+                else condition = label
+                    IA->>IA: match labels
+                else condition = noReply
+                    IA->>IA: match no-reply sender
+                else condition = largeAttachment
+                    IA->>IA: check attachment size
+                else unknown type
+                    IA->>Logger: warn("Unknown rule type")
                 end
-                
-                deactivate IA
-                Rules-->>IA: RuleResult{matched, score, reason}
+                Rules-->>IA: RuleResult
                 deactivate Rules
-                
-                alt result.matched = true
-                    IA->>Logger: debug("Rule matched", {ruleId, ruleName, score})
-                else Rule evaluation error
-                    IA->>Logger: error("Rule evaluation failed", {ruleId, error})
-                end
             end
-            
-            Note over IA: Score Calculation & Result Generation
-            IA->>IA: calculateImportanceScore(ruleEvaluations)
-            activate IA
-            IA->>IA: sum scores from matched rules
-            IA-->>IA: totalScore
-            deactivate IA
-            
-            IA->>IA: determineImportanceLevel(score)
-            activate IA
-            alt score >= config.scoring.highThreshold
-                IA-->>IA: 'high'
-            else score <= config.scoring.lowThreshold
-                IA-->>IA: 'low'
-            else
-                IA-->>IA: 'medium'
-            end
-            deactivate IA
-            
-            IA->>IA: calculateConfidence(ruleEvaluations)
-            activate IA
-            IA->>IA: baseConfidence = matchedRules / totalRules
-            IA->>IA: priorityWeight = sum(matchedRulePriorities) / 100
-            IA->>IA: confidence = Math.min(1, baseConfidence + priorityWeight)
-            IA-->>IA: confidence
-            deactivate IA
-            
-            IA->>IA: create ImportanceResult{score, level, matchedRules, confidence}
-            
-            Note over Client,Logger: Phase 4: Caching & Persistence
-            
-            alt Caching enabled
-                IA->>CM: set(contextHash, result, 300)
-                activate CM
-                CM->>Logger: debug("Cached data for key", contextHash)
-                deactivate CM
-            end
-            
-            IA->>Logger: debug("Analysis complete", {level, score, matchedRules: matchedRules.length})
-            IA-->>CE: ImportanceResult
-            deactivate IA
+
+            IA->>IA: calculateImportanceScore()
+            IA->>IA: determineImportanceLevel()
+            IA->>IA: calculateConfidence()
+            IA->>IA: create ImportanceResult
         end
-        
-        CE->>CE: combineAnalysisResults(importance, dateSize, labelClassification)
-        activate CE
-        alt importance.level = 'high'
-            CE-->>CE: PriorityCategory.HIGH
-        else importance.level = 'low' && other factors don't override
-            CE-->>CE: PriorityCategory.LOW
-        else importance.level = 'medium'
-            alt recent && important labels
-                CE-->>CE: PriorityCategory.HIGH
+
+        alt Caching enabled
+            IA->>CM: set(contextHash, result, ttl)
+            activate CM
+            CM->>Logger: debug("Cached data")
+            deactivate CM
+        end
+
+        IA->>Logger: debug("Analysis complete")
+        IA-->>CE: ImportanceResult
+        deactivate IA
+
+        CE->>CE: combineAnalysisResults()
+        alt importance = high
+            CE->>CE: assign HIGH category
+        else importance = low
+            CE->>CE: assign LOW category
+        else
+            alt recent + important labels
+                CE->>CE: assign HIGH category
             else spam/promotional
-                CE-->>CE: PriorityCategory.LOW
+                CE->>CE: assign LOW category
             else
-                CE-->>CE: PriorityCategory.MEDIUM
+                CE->>CE: assign MEDIUM category
             end
         end
-        deactivate CE
-        
-        CE->>CE: calculateOverallConfidence(importance, dateSize, labelClassification)
-        CE->>CE: generateReasoning(importance, dateSize, labelClassification)
-        CE-->>CE: CombinedAnalysisResult{finalCategory, confidence, reasoning}
-        deactivate CE
-        
-        CE->>DM: upsertEmailIndex(email with category)
+
+        CE->>CE: calculateConfidence()
+        CE->>CE: generateReasoning()
+        CE->>DM: upsertEmailIndex()
         activate DM
-        DM->>DM: INSERT OR REPLACE INTO email_index
-        alt Database success
-            DM-->>CE: void
-        else Database error
-            DM->>Logger: error("Database update failed")
-            DM-->>CE: throw error
+        alt Success
+            DM-->>CE: success
+        else Failure
+            DM->>Logger: error("DB update failed")
+            DM-->>CE: fallback result
         end
         deactivate DM
-        
-        alt Database error
-            CE->>Logger: error("Category determination failed")
-            CE-->>CE: return PriorityCategory.MEDIUM (fallback)
-        end
-        
+
         deactivate CE
     end
-    
+
     Note over Client,Logger: Phase 5: Cleanup & Response
-    
+
     CE->>CM: flush()
     activate CM
     CM->>CM: clear()
     CM->>Logger: info("Cache cleared")
     deactivate CM
-    
-    CE->>Logger: info("Categorization completed", {processed, categories})
-    CE-->>Client: {processed: number, categories: {high, medium, low}}
+
+    CE->>Logger: info("Categorization complete")
+    CE-->>Client: final result
     deactivate CE
 
-    Note over Client,Logger: Error Handling Scenarios
-    
+    Note over Client,Logger: Error Handling
+
     rect rgb(255, 200, 200)
-        Note over IA,CM: Cache Operation Failures
+        Note over IA,CM: Cache Failure
         IA->>CM: get(contextHash)
         activate CM
-        CM->>CM: cache operation fails
-        CM->>Logger: error("Cache retrieval failed", {contextHash, error})
+        CM->>Logger: error("Cache retrieval failed")
         CM-->>IA: null
         deactivate CM
-        IA->>IA: continue with normal analysis flow
+        IA->>IA: proceed with analysis
     end
-    
+
     rect rgb(255, 200, 200)
         Note over CE,IA: Timeout Protection
-        CE->>CE: runWithTimeout(analyzeImportance, timeoutMs, "ImportanceAnalyzer")
-        activate CE
-        CE->>Logger: debug("Starting ImportanceAnalyzer with timeout")
-        
-        alt Analysis completes within timeout
-            CE->>IA: analyzeImportance(context)
+        CE->>Logger: debug("Starting with timeout")
+        alt Completes in time
+            CE->>IA: analyzeImportance()
             activate IA
-            IA-->>CE: ImportanceResult
+            IA-->>CE: result
             deactivate IA
-            CE->>Logger: debug("ImportanceAnalyzer completed successfully")
-            CE-->>CE: result
-        else Timeout exceeded
-            CE->>Logger: error("ImportanceAnalyzer timed out after timeoutMs")
-            CE-->>CE: throw Error("ImportanceAnalyzer timed out")
+        else Timeout
+            CE->>Logger: error("Timed out")
         end
-        deactivate CE
     end
-    
+
     rect rgb(255, 200, 200)
-        Note over DM: Database Transaction Failures
-        CE->>DM: upsertEmailIndex(email)
+        Note over DM: DB Transaction Failure
+        CE->>DM: upsertEmailIndex()
         activate DM
-        DM->>DM: BEGIN TRANSACTION
-        DM->>DM: INSERT OR REPLACE fails
-        DM->>DM: ROLLBACK
-        DM->>Logger: error("Database transaction failed")
-        DM-->>CE: throw error
+        DM->>Logger: error("Transaction failed")
+        DM-->>CE: fallback
         deactivate DM
-        CE->>Logger: error("Email categorization failed", {emailId, error})
-        CE-->>CE: continue with next email
+        CE->>Logger: error("Email categorization failed")
     end
 ```
 
