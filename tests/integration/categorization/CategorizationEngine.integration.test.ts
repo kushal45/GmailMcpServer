@@ -4,7 +4,7 @@ import { DatabaseManager } from '../../../src/database/DatabaseManager.js';
 import { CacheManager } from '../../../src/cache/CacheManager.js';
 import { CategorizeOptions, EmailIndex, PriorityCategory } from '../../../src/types/index.js';
 import { CategorizationSystemConfig } from '../../../src/categorization/config/CategorizationConfig.js';
-import { CombinedAnalysisResult } from '../../../src/categorization/types.js';
+import { CombinedAnalysisResult, EnhancedCategorizationResult } from '../../../src/categorization/types.js';
 import {
   mockEmails,
   expectedCategories,
@@ -55,7 +55,7 @@ describe('CategorizationEngine Integration Tests', () => {
 
       // Run categorization
       const options: CategorizeOptions = { forceRefresh: false };
-      const result = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
 
       // Verify all emails were processed
       expect(result.processed).toBe(mockEmails.length);
@@ -64,6 +64,43 @@ describe('CategorizationEngine Integration Tests', () => {
       expect(result.categories.high).toBe(expectedCategories.high.length);
       expect(result.categories.medium).toBe(expectedCategories.medium.length);
       expect(result.categories.low).toBe(expectedCategories.low.length);
+
+      // NEW: Verify emails array is returned with analyzer results
+      expect(result.emails).toBeDefined();
+      expect(Array.isArray(result.emails)).toBe(true);
+      expect(result.emails.length).toBe(mockEmails.length);
+      
+      // Verify each email has analyzer results
+      result.emails.forEach(email => {
+        expect(email.category).not.toBeNull();
+        expect(email.importanceLevel).toBeDefined();
+        expect(email.importanceScore).toBeDefined();
+        expect(email.ageCategory).toBeDefined();
+        expect(email.sizeCategory).toBeDefined();
+        expect(email.analysisTimestamp).toBeDefined();
+        expect(email.analysisVersion).toBeDefined();
+      });
+
+      // NEW: Verify analyzer_insights are provided
+      expect(result.analyzer_insights).toBeDefined();
+      if (result.analyzer_insights) {
+        expect(result.analyzer_insights.top_importance_rules).toBeDefined();
+        expect(Array.isArray(result.analyzer_insights.top_importance_rules)).toBe(true);
+        expect(typeof result.analyzer_insights.spam_detection_rate).toBe('number');
+        expect(typeof result.analyzer_insights.avg_confidence).toBe('number');
+        expect(result.analyzer_insights.age_distribution).toBeDefined();
+        expect(result.analyzer_insights.size_distribution).toBeDefined();
+        
+        // Verify distribution totals
+        const ageTotal = result.analyzer_insights.age_distribution.recent +
+                        result.analyzer_insights.age_distribution.moderate +
+                        result.analyzer_insights.age_distribution.old;
+        const sizeTotal = result.analyzer_insights.size_distribution.small +
+                         result.analyzer_insights.size_distribution.medium +
+                         result.analyzer_insights.size_distribution.large;
+        expect(ageTotal).toBe(result.processed);
+        expect(sizeTotal).toBe(result.processed);
+      }
 
       // Verify high priority emails were categorized correctly
       await verifyCategorization(
@@ -89,10 +126,10 @@ describe('CategorizationEngine Integration Tests', () => {
       );
 
       // Verify logging
-      expect(consoleCapture.infos.some(log => 
+      expect(consoleCapture.infos.some(log =>
         log.includes('Starting email categorization')
       )).toBe(true);
-      expect(consoleCapture.infos.some(log => 
+      expect(consoleCapture.infos.some(log =>
         log.includes('Email categorization completed')
       )).toBe(true);
     });
@@ -110,24 +147,45 @@ describe('CategorizationEngine Integration Tests', () => {
       
       // Run categorization with forceRefresh
       const options: CategorizeOptions = { forceRefresh: true };
-      const result = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
       
       // Verify all emails were processed again
       expect(result.processed).toBe(mockEmails.length);
       
+      // NEW: Verify enhanced return format
+      expect(result.emails).toBeDefined();
+      expect(result.emails.length).toBe(mockEmails.length);
+      expect(result.analyzer_insights).toBeDefined();
+      
       // Verify the changed email was recategorized correctly
       const recategorizedEmail = await dbManager.getEmailIndex('email-high-1');
       expect(recategorizedEmail?.category).toBe(PriorityCategory.HIGH);
+      
+      // Verify the email is also in the returned emails array with correct category
+      const emailInResult = result.emails.find(e => e.id === 'email-high-1');
+      expect(emailInResult).toBeDefined();
+      expect(emailInResult?.category).toBe(PriorityCategory.HIGH);
     });
 
     it('should categorize emails from specific year only', async () => {
       // Run categorization for 2023 only
       const options: CategorizeOptions = { forceRefresh: false, year: 2023 };
-      const result = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
       
       // Count emails from 2023
       const emails2023 = mockEmails.filter(e => e.year === 2023);
       expect(result.processed).toBe(emails2023.length);
+      
+      // NEW: Verify enhanced return format
+      expect(result.emails).toBeDefined();
+      expect(result.emails.length).toBe(emails2023.length);
+      expect(result.analyzer_insights).toBeDefined();
+      
+      // Verify all returned emails are from 2023
+      result.emails.forEach(email => {
+        expect(email.year).toBe(2023);
+        expect(email.category).not.toBeNull();
+      });
       
       // Verify only 2023 emails were categorized
       const categorized2023 = await dbManager.searchEmails({ year: 2023 });
@@ -145,13 +203,109 @@ describe('CategorizationEngine Integration Tests', () => {
     it('should handle empty result sets gracefully', async () => {
       // Run categorization for a year with no emails
       const options: CategorizeOptions = { forceRefresh: false, year: 2025 };
-      const result = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
       
       // Verify no emails were processed
       expect(result.processed).toBe(0);
       expect(result.categories.high).toBe(0);
       expect(result.categories.medium).toBe(0);
       expect(result.categories.low).toBe(0);
+      
+      // NEW: Verify enhanced return format for empty results
+      expect(result.emails).toBeDefined();
+      expect(Array.isArray(result.emails)).toBe(true);
+      expect(result.emails.length).toBe(0);
+      
+      // Analyzer insights should still be provided even for empty results
+      expect(result.analyzer_insights).toBeDefined();
+      if (result.analyzer_insights) {
+        expect(result.analyzer_insights.top_importance_rules).toBeDefined();
+        expect(Array.isArray(result.analyzer_insights.top_importance_rules)).toBe(true);
+        expect(result.analyzer_insights.spam_detection_rate).toBe(0);
+        expect(result.analyzer_insights.avg_confidence).toBe(0);
+        expect(result.analyzer_insights.age_distribution.recent).toBe(0);
+        expect(result.analyzer_insights.age_distribution.moderate).toBe(0);
+        expect(result.analyzer_insights.age_distribution.old).toBe(0);
+        expect(result.analyzer_insights.size_distribution.small).toBe(0);
+        expect(result.analyzer_insights.size_distribution.medium).toBe(0);
+        expect(result.analyzer_insights.size_distribution.large).toBe(0);
+      }
+    });
+
+    it('should validate enhanced categorization result structure', async () => {
+      // Run categorization
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      
+      // Validate basic structure
+      expect(typeof result.processed).toBe('number');
+      expect(result.processed).toBeGreaterThan(0);
+      
+      // Validate categories structure
+      expect(result.categories).toBeDefined();
+      expect(typeof result.categories.high).toBe('number');
+      expect(typeof result.categories.medium).toBe('number');
+      expect(typeof result.categories.low).toBe('number');
+      expect(result.categories.high + result.categories.medium + result.categories.low).toBe(result.processed);
+      
+      // Validate emails array
+      expect(result.emails).toBeDefined();
+      expect(Array.isArray(result.emails)).toBe(true);
+      expect(result.emails.length).toBe(result.processed);
+      
+      // Validate each email has required analyzer result fields
+      result.emails.forEach((email, index) => {
+        expect(email.id).toBeDefined();
+        expect(email.category).not.toBeNull();
+        expect(['high', 'medium', 'low']).toContain(email.category);
+        
+        // Importance analyzer results
+        expect(email.importanceLevel).toBeDefined();
+        expect(['high', 'medium', 'low']).toContain(email.importanceLevel);
+        expect(typeof email.importanceScore).toBe('number');
+        expect(Array.isArray(email.importanceMatchedRules)).toBe(true);
+        expect(typeof email.importanceConfidence).toBe('number');
+        
+        // Date/Size analyzer results
+        expect(email.ageCategory).toBeDefined();
+        expect(['recent', 'moderate', 'old']).toContain(email.ageCategory);
+        expect(email.sizeCategory).toBeDefined();
+        expect(['small', 'medium', 'large']).toContain(email.sizeCategory);
+        expect(typeof email.recencyScore).toBe('number');
+        
+        // Label classifier results
+        expect(email.gmailCategory).toBeDefined();
+        expect(typeof email.spamScore).toBe('number');
+        expect(typeof email.promotionalScore).toBe('number');
+        expect(typeof email.socialScore).toBe('number');
+        
+        // Analysis metadata
+        expect(email.analysisTimestamp).toBeDefined();
+        expect(email.analysisVersion).toBeDefined();
+      });
+      
+      // Validate analyzer_insights
+      expect(result.analyzer_insights).toBeDefined();
+      if (result.analyzer_insights) {
+        expect(Array.isArray(result.analyzer_insights.top_importance_rules)).toBe(true);
+        expect(typeof result.analyzer_insights.spam_detection_rate).toBe('number');
+        expect(result.analyzer_insights.spam_detection_rate).toBeGreaterThanOrEqual(0);
+        expect(result.analyzer_insights.spam_detection_rate).toBeLessThanOrEqual(1);
+        expect(typeof result.analyzer_insights.avg_confidence).toBe('number');
+        expect(result.analyzer_insights.avg_confidence).toBeGreaterThanOrEqual(0);
+        expect(result.analyzer_insights.avg_confidence).toBeLessThanOrEqual(1);
+        
+        // Validate age distribution
+        expect(result.analyzer_insights.age_distribution).toBeDefined();
+        expect(typeof result.analyzer_insights.age_distribution.recent).toBe('number');
+        expect(typeof result.analyzer_insights.age_distribution.moderate).toBe('number');
+        expect(typeof result.analyzer_insights.age_distribution.old).toBe('number');
+        
+        // Validate size distribution
+        expect(result.analyzer_insights.size_distribution).toBeDefined();
+        expect(typeof result.analyzer_insights.size_distribution.small).toBe('number');
+        expect(typeof result.analyzer_insights.size_distribution.medium).toBe('number');
+        expect(typeof result.analyzer_insights.size_distribution.large).toBe('number');
+      }
     });
   });
 

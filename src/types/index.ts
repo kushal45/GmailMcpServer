@@ -55,6 +55,31 @@ export interface EmailIndex {
   archived?: boolean;
   archiveDate?: Date;
   archiveLocation?: string;
+  
+  // Importance Analysis Results
+  importanceScore?: number;
+  importanceLevel?: 'high' | 'medium' | 'low';
+  importanceMatchedRules?: string[];
+  importanceConfidence?: number;
+  
+  // Date/Size Analysis Results
+  ageCategory?: 'recent' | 'moderate' | 'old';
+  sizeCategory?: 'small' | 'medium' | 'large';
+  recencyScore?: number;
+  sizePenalty?: number;
+  
+  // Label Classification Results
+  gmailCategory?: 'primary' | 'important' | 'spam' | 'promotions' | 'social' | 'updates' | 'forums';
+  spamScore?: number;
+  promotionalScore?: number;
+  socialScore?: number;
+  spamIndicators?: string[];
+  promotionalIndicators?: string[];
+  socialIndicators?: string[];
+  
+  // Analysis Metadata
+  analysisTimestamp?: Date;
+  analysisVersion?: string;
 }
 
 export interface SearchCriteria {

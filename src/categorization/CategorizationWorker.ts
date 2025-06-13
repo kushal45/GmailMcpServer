@@ -94,7 +94,7 @@ export class CategorizationWorker {
           year
         });
         
-        if (categorizationResult.categories === 0) {
+        if (categorizationResult.processed === 0) {
           logger.info('No emails to categorize');
           await this.jobStatusStore.updateJobStatus(
             jobId,

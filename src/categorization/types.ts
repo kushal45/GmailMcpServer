@@ -75,3 +75,17 @@ export const Labels = {
     CATEGORY_SOCIAL: "category_social",
 };
 export type LabelsType = keyof typeof Labels;
+
+// Enhanced categorization result interface
+export interface EnhancedCategorizationResult {
+  processed: number;
+  categories: { high: number; medium: number; low: number };
+  emails: import('../types/index.js').EmailIndex[];
+  analyzer_insights?: {
+    top_importance_rules: string[];
+    spam_detection_rate: number;
+    avg_confidence: number;
+    age_distribution: { recent: number; moderate: number; old: number };
+    size_distribution: { small: number; medium: number; large: number };
+  };
+}

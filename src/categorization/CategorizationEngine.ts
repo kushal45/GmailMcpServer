@@ -8,7 +8,11 @@ import {
   ILabelClassifier,
   EmailAnalysisContext,
   CombinedAnalysisResult,
-  AnalysisMetrics
+  AnalysisMetrics,
+  ImportanceResult,
+  DateSizeResult,
+  LabelClassification,
+  EnhancedCategorizationResult
 } from './types.js';
 import { AnalyzerFactory } from './factories/AnalyzerFactory.js';
 import {
@@ -16,6 +20,9 @@ import {
   CategorizationConfigManager,
   DEFAULT_CATEGORIZATION_CONFIG
 } from './config/CategorizationConfig.js';
+
+// Analysis version for tracking schema changes
+const ANALYSIS_VERSION = '1.0.0';
 
 // Legacy interface for backward compatibility
 interface PriorityRuleConfig {
@@ -133,7 +140,7 @@ export class CategorizationEngine {
   /**
    * Main method to categorize emails based on configured rules and analyzers
    */
-  async categorizeEmails(options: CategorizeOptions): Promise<{ processed: number, categories: any }> {
+  async categorizeEmails(options: CategorizeOptions): Promise<EnhancedCategorizationResult> {
     logger.info('Starting email categorization', options);
     
     try {
@@ -142,6 +149,14 @@ export class CategorizationEngine {
       
       let processed = 0;
       const categories = { high: 0, medium: 0, low: 0 };
+      const categorizedEmails: EmailIndex[] = [];
+      
+      // Track analyzer insights data
+      const allImportanceRules: string[] = [];
+      const confidenceScores: number[] = [];
+      const ageDistribution = { recent: 0, moderate: 0, old: 0 };
+      const sizeDistribution = { small: 0, medium: 0, large: 0 };
+      let spamDetectedCount = 0;
       
       for (const email of emails) {
         const category = await this.determineCategory(email);
@@ -150,8 +165,28 @@ export class CategorizationEngine {
         // Update database
         await this.databaseManager.upsertEmailIndex(email);
         
+        // Collect the categorized email with all analyzer results
+        categorizedEmails.push({ ...email });
+        
         categories[category]++;
         processed++;
+        
+        // Collect analyzer insights data
+        if (email.importanceMatchedRules) {
+          allImportanceRules.push(...email.importanceMatchedRules);
+        }
+        if (email.importanceConfidence !== undefined) {
+          confidenceScores.push(email.importanceConfidence);
+        }
+        if (email.ageCategory) {
+          ageDistribution[email.ageCategory]++;
+        }
+        if (email.sizeCategory) {
+          sizeDistribution[email.sizeCategory]++;
+        }
+        if (email.spamScore && email.spamScore > 0.5) {
+          spamDetectedCount++;
+        }
         
         // Log progress every 100 emails
         if (processed % 100 === 0) {
@@ -162,9 +197,24 @@ export class CategorizationEngine {
       // Clear cache after categorization
       this.cacheManager.flush();
       
+      // Generate analyzer insights
+      const analyzer_insights = this.generateAnalyzerInsights(
+        allImportanceRules,
+        confidenceScores,
+        ageDistribution,
+        sizeDistribution,
+        spamDetectedCount,
+        processed
+      );
+      
       logger.info('Email categorization completed', { processed, categories });
       
-      return { processed, categories };
+      return {
+        processed,
+        categories,
+        emails: categorizedEmails,
+        analyzer_insights
+      };
     } catch (error) {
       logger.error('Error during categorization:', error);
       throw error;
@@ -173,6 +223,7 @@ export class CategorizationEngine {
 
   /**
    * Determines email category using orchestrated analysis from multiple analyzers
+   * and collects detailed analyzer results for persistence
    */
   private async determineCategory(email: EmailIndex): Promise<PriorityCategory> {
     const startTime = Date.now();
@@ -184,14 +235,20 @@ export class CategorizationEngine {
       // Orchestrate analysis across all analyzers
       const combinedResult = await this.orchestrateAnalysis(context);
       
+      // Collect and store detailed analyzer results in the email object
+      this.collectAnalyzerResults(email, combinedResult);
+      
       // Update metrics
       this.metrics.totalProcessingTime += Date.now() - startTime;
       
-      logger.debug('CategorizationEngine: Category determined', {
+      logger.debug('CategorizationEngine: Category determined with detailed results', {
         emailId: email.id,
         category: combinedResult.finalCategory,
         confidence: combinedResult.confidence,
-        processingTime: combinedResult.processingTime
+        processingTime: combinedResult.processingTime,
+        importanceLevel: email.importanceLevel,
+        ageCategory: email.ageCategory,
+        gmailCategory: email.gmailCategory
       });
       
       return combinedResult.finalCategory;
@@ -435,6 +492,106 @@ export class CategorizationEngine {
     }
     
     return reasoning;
+  }
+
+  /**
+   * Collects detailed analyzer results and stores them in the email object for persistence
+   */
+  private collectAnalyzerResults(email: EmailIndex, combinedResult: CombinedAnalysisResult): void {
+    try {
+      // Extract importance analysis results
+      const importanceResult = combinedResult.importance;
+      email.importanceScore = importanceResult.score;
+      email.importanceLevel = importanceResult.level;
+      email.importanceMatchedRules = importanceResult.matchedRules || [];
+      email.importanceConfidence = importanceResult.confidence;
+
+      // Extract date/size analysis results
+      const dateSizeResult = combinedResult.dateSize;
+      email.ageCategory = dateSizeResult.ageCategory;
+      email.sizeCategory = dateSizeResult.sizeCategory;
+      email.recencyScore = dateSizeResult.recencyScore;
+      email.sizePenalty = dateSizeResult.sizePenalty;
+
+      // Extract label classification results
+      const labelClassification = combinedResult.labelClassification;
+      // Map 'other' category to 'primary' as fallback since EmailIndex doesn't support 'other'
+      email.gmailCategory = labelClassification.category === 'other' ? 'primary' : labelClassification.category;
+      email.spamScore = labelClassification.spamScore;
+      email.promotionalScore = labelClassification.promotionalScore;
+      email.socialScore = labelClassification.socialScore;
+      
+      // Handle indicators arrays - store as arrays directly
+      if (labelClassification.indicators) {
+        email.spamIndicators = labelClassification.indicators.spam || [];
+        email.promotionalIndicators = labelClassification.indicators.promotional || [];
+        email.socialIndicators = labelClassification.indicators.social || [];
+      }
+
+
+      // Add analysis metadata
+      email.analysisTimestamp = new Date();
+      email.analysisVersion = ANALYSIS_VERSION;
+
+      logger.debug('CategorizationEngine: Analyzer results collected', {
+        emailId: email.id,
+        importanceLevel: email.importanceLevel,
+        importanceScore: email.importanceScore,
+        ageCategory: email.ageCategory,
+        sizeCategory: email.sizeCategory,
+        gmailCategory: email.gmailCategory,
+        spamScore: email.spamScore,
+        analysisVersion: email.analysisVersion
+      });
+    } catch (error) {
+      logger.error('CategorizationEngine: Error collecting analyzer results', {
+        emailId: email.id,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      
+      // Set minimal analysis metadata even on error
+      email.analysisTimestamp = new Date();
+      email.analysisVersion = ANALYSIS_VERSION;
+    }
+  }
+
+  /**
+   * Generate analyzer insights summary from processed emails
+   */
+  private generateAnalyzerInsights(
+    allImportanceRules: string[],
+    confidenceScores: number[],
+    ageDistribution: { recent: number; moderate: number; old: number },
+    sizeDistribution: { small: number; medium: number; large: number },
+    spamDetectedCount: number,
+    totalProcessed: number
+  ) {
+    // Get top importance rules (most frequently matched)
+    const ruleFrequency = allImportanceRules.reduce((acc, rule) => {
+      acc[rule] = (acc[rule] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    const top_importance_rules = Object.entries(ruleFrequency)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([rule]) => rule);
+    
+    // Calculate average confidence
+    const avg_confidence = confidenceScores.length > 0
+      ? confidenceScores.reduce((sum, score) => sum + score, 0) / confidenceScores.length
+      : 0;
+    
+    // Calculate spam detection rate
+    const spam_detection_rate = totalProcessed > 0 ? spamDetectedCount / totalProcessed : 0;
+    
+    return {
+      top_importance_rules,
+      spam_detection_rate: Math.round(spam_detection_rate * 100) / 100, // Round to 2 decimal places
+      avg_confidence: Math.round(avg_confidence * 100) / 100, // Round to 2 decimal places
+      age_distribution: ageDistribution,
+      size_distribution: sizeDistribution
+    };
   }
 
   private async getEmailsForCategorization(options: CategorizeOptions): Promise<EmailIndex[]> {

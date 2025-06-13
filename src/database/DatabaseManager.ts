@@ -55,6 +55,9 @@ export class DatabaseManager {
       // Create tables
       await this.createTables();
       
+      // Run migration for existing databases
+      await this.migrateToAnalyzerSchema();
+      
       this.initialized = true;
       logger.info('Database initialized successfully');
     } catch (error) {
@@ -65,7 +68,7 @@ export class DatabaseManager {
 
   private async createTables(): Promise<void> {
     const queries = [
-      // Email index table
+      // Email index table (basic schema without analyzer columns for migration compatibility)
       `CREATE TABLE IF NOT EXISTS email_index (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
@@ -161,6 +164,92 @@ export class DatabaseManager {
 
     for (const query of queries) {
       await this.run(query);
+    }
+  }
+
+  /**
+   * Migrates existing database schema to include analyzer result columns
+   */
+  async migrateToAnalyzerSchema(): Promise<void> {
+    try {
+      // Check if email_index table exists first
+      const tableExists = await this.get("SELECT name FROM sqlite_master WHERE type='table' AND name='email_index'");
+      
+      if (!tableExists) {
+        logger.info('email_index table does not exist yet, skipping migration');
+        return;
+      }
+
+      // Check if migration is needed by checking if importance_score column exists
+      const tableInfo = await this.all("PRAGMA table_info(email_index)");
+      const hasAnalyzerColumns = tableInfo.some((col: any) => col.name === 'importance_score');
+      
+      if (hasAnalyzerColumns) {
+        logger.info('Database already has analyzer columns, skipping migration');
+        return;
+      }
+
+      logger.info('Starting database migration to add analyzer result columns');
+
+      // Add new columns for analyzer results (without CHECK constraints for ALTER TABLE)
+      const migrationQueries = [
+        // Importance Analysis Results
+        'ALTER TABLE email_index ADD COLUMN importance_score REAL',
+        'ALTER TABLE email_index ADD COLUMN importance_level TEXT',
+        'ALTER TABLE email_index ADD COLUMN importance_matched_rules TEXT',
+        'ALTER TABLE email_index ADD COLUMN importance_confidence REAL',
+        
+        // Date/Size Analysis Results
+        'ALTER TABLE email_index ADD COLUMN age_category TEXT',
+        'ALTER TABLE email_index ADD COLUMN size_category TEXT',
+        'ALTER TABLE email_index ADD COLUMN recency_score REAL',
+        'ALTER TABLE email_index ADD COLUMN size_penalty REAL',
+        
+        // Label Classification Results
+        'ALTER TABLE email_index ADD COLUMN gmail_category TEXT',
+        'ALTER TABLE email_index ADD COLUMN spam_score REAL',
+        'ALTER TABLE email_index ADD COLUMN promotional_score REAL',
+        'ALTER TABLE email_index ADD COLUMN social_score REAL',
+        'ALTER TABLE email_index ADD COLUMN spam_indicators TEXT',
+        'ALTER TABLE email_index ADD COLUMN promotional_indicators TEXT',
+        'ALTER TABLE email_index ADD COLUMN social_indicators TEXT',
+        
+        // Analysis Metadata
+        'ALTER TABLE email_index ADD COLUMN analysis_timestamp INTEGER',
+        'ALTER TABLE email_index ADD COLUMN analysis_version TEXT'
+      ];
+
+      // Execute migration queries
+      for (const query of migrationQueries) {
+        try {
+          await this.run(query);
+        } catch (error: any) {
+          // Ignore "duplicate column name" errors as they indicate the column already exists
+          if (!error.message.includes('duplicate column name')) {
+            throw error;
+          }
+        }
+      }
+
+      // Create new indexes
+      const indexQueries = [
+        'CREATE INDEX IF NOT EXISTS idx_email_importance_level ON email_index(importance_level)',
+        'CREATE INDEX IF NOT EXISTS idx_email_importance_score ON email_index(importance_score)',
+        'CREATE INDEX IF NOT EXISTS idx_email_age_category ON email_index(age_category)',
+        'CREATE INDEX IF NOT EXISTS idx_email_size_category ON email_index(size_category)',
+        'CREATE INDEX IF NOT EXISTS idx_email_gmail_category ON email_index(gmail_category)',
+        'CREATE INDEX IF NOT EXISTS idx_email_spam_score ON email_index(spam_score)',
+        'CREATE INDEX IF NOT EXISTS idx_email_analysis_timestamp ON email_index(analysis_timestamp)'
+      ];
+
+      for (const query of indexQueries) {
+        await this.run(query);
+      }
+
+      logger.info('Database migration completed successfully');
+    } catch (error) {
+      logger.error('Database migration failed:', error);
+      throw error;
     }
   }
 
@@ -279,8 +368,13 @@ export class DatabaseManager {
       INSERT OR REPLACE INTO email_index (
         id, thread_id, category, subject, sender, recipients,
         date, year, size, has_attachments, labels, snippet,
-        archived, archive_date, archive_location, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+        archived, archive_date, archive_location,
+        importance_score, importance_level, importance_matched_rules, importance_confidence,
+        age_category, size_category, recency_score, size_penalty,
+        gmail_category, spam_score, promotional_score, social_score,
+        spam_indicators, promotional_indicators, social_indicators,
+        analysis_timestamp, analysis_version, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
     `;
     
     await this.run(sql, [
@@ -290,7 +384,7 @@ export class DatabaseManager {
       email.subject,
       email.sender,
       JSON.stringify(email.recipients),
-      email.date ? email.date.getTime() :Date.now(),
+      email.date ? email.date.getTime() : Date.now(),
       email?.year,
       email?.size,
       email?.hasAttachments ? 1 : 0,
@@ -298,7 +392,28 @@ export class DatabaseManager {
       email?.snippet,
       email?.archived ? 1 : 0,
       email?.archiveDate?.getTime() || null,
-      email?.archiveLocation || null
+      email?.archiveLocation || null,
+      // Importance Analysis Results
+      email?.importanceScore || null,
+      email?.importanceLevel || null,
+      email?.importanceMatchedRules ? JSON.stringify(email.importanceMatchedRules) : null,
+      email?.importanceConfidence || null,
+      // Date/Size Analysis Results
+      email?.ageCategory || null,
+      email?.sizeCategory || null,
+      email?.recencyScore || null,
+      email?.sizePenalty || null,
+      // Label Classification Results
+      email?.gmailCategory || null,
+      email?.spamScore || null,
+      email?.promotionalScore || null,
+      email?.socialScore || null,
+      email?.spamIndicators ? JSON.stringify(email.spamIndicators) : null,
+      email?.promotionalIndicators ? JSON.stringify(email.promotionalIndicators) : null,
+      email?.socialIndicators ? JSON.stringify(email.socialIndicators) : null,
+      // Analysis Metadata
+      email?.analysisTimestamp?.getTime() || null,
+      email?.analysisVersion || null
     ]);
   }
 
@@ -307,8 +422,13 @@ export class DatabaseManager {
       INSERT OR REPLACE INTO email_index (
         id, thread_id, category, subject, sender, recipients,
         date, year, size, has_attachments, labels, snippet,
-        archived, archive_date, archive_location, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+        archived, archive_date, archive_location,
+        importance_score, importance_level, importance_matched_rules, importance_confidence,
+        age_category, size_category, recency_score, size_penalty,
+        gmail_category, spam_score, promotional_score, social_score,
+        spam_indicators, promotional_indicators, social_indicators,
+        analysis_timestamp, analysis_version, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
     `;
     const paramSets = emails.map(email => [
       email.id,
@@ -317,7 +437,7 @@ export class DatabaseManager {
       email.subject,
       email.sender,
       JSON.stringify(email.recipients),
-       email.date ? email.date.getTime() : Date.now(),
+      email.date ? email.date.getTime() : Date.now(),
       email.year,
       email.size,
       email.hasAttachments ? 1 : 0,
@@ -325,7 +445,28 @@ export class DatabaseManager {
       email.snippet,
       email.archived ? 1 : 0,
       email.archiveDate ? email.archiveDate.getTime() : null,
-      email.archiveLocation || null
+      email.archiveLocation || null,
+      // Importance Analysis Results
+      email?.importanceScore || null,
+      email?.importanceLevel || null,
+      email?.importanceMatchedRules ? JSON.stringify(email.importanceMatchedRules) : null,
+      email?.importanceConfidence || null,
+      // Date/Size Analysis Results
+      email?.ageCategory || null,
+      email?.sizeCategory || null,
+      email?.recencyScore || null,
+      email?.sizePenalty || null,
+      // Label Classification Results
+      email?.gmailCategory || null,
+      email?.spamScore || null,
+      email?.promotionalScore || null,
+      email?.socialScore || null,
+      email?.spamIndicators ? JSON.stringify(email.spamIndicators) : null,
+      email?.promotionalIndicators ? JSON.stringify(email.promotionalIndicators) : null,
+      email?.socialIndicators ? JSON.stringify(email.socialIndicators) : null,
+      // Analysis Metadata
+      email?.analysisTimestamp?.getTime() || null,
+      email?.analysisVersion || null
     ]);
     await this.run(sql, paramSets);
   }
@@ -415,7 +556,32 @@ export class DatabaseManager {
       snippet: row.snippet,
       archived: row.archived === 1,
       archiveDate: row.archive_date ? new Date(row.archive_date) : undefined,
-      archiveLocation: row.archive_location
+      archiveLocation: row.archive_location,
+      
+      // Importance Analysis Results
+      importanceScore: row.importance_score || undefined,
+      importanceLevel: row.importance_level || undefined,
+      importanceMatchedRules: row.importance_matched_rules ? JSON.parse(row.importance_matched_rules) : undefined,
+      importanceConfidence: row.importance_confidence || undefined,
+      
+      // Date/Size Analysis Results
+      ageCategory: row.age_category || undefined,
+      sizeCategory: row.size_category || undefined,
+      recencyScore: row.recency_score || undefined,
+      sizePenalty: row.size_penalty || undefined,
+      
+      // Label Classification Results
+      gmailCategory: row.gmail_category || undefined,
+      spamScore: row.spam_score || undefined,
+      promotionalScore: row.promotional_score || undefined,
+      socialScore: row.social_score || undefined,
+      spamIndicators: row.spam_indicators ? JSON.parse(row.spam_indicators) : undefined,
+      promotionalIndicators: row.promotional_indicators ? JSON.parse(row.promotional_indicators) : undefined,
+      socialIndicators: row.social_indicators ? JSON.parse(row.social_indicators) : undefined,
+      
+      // Analysis Metadata
+      analysisTimestamp: row.analysis_timestamp ? new Date(row.analysis_timestamp) : undefined,
+      analysisVersion: row.analysis_version || undefined
     };
   }
 
@@ -621,6 +787,13 @@ export class DatabaseManager {
   `;
   await this.run(sql, ['trash', ...emailIds]);
 }
+
+  async deleteEmailIndexs(emails: EmailIndex[]): Promise<number> {
+    if (emails.length === 0) return 0;
+    const sql = `DELETE FROM email_index WHERE id IN (${emails.map(() => '?').join(', ')})`;
+    await this.run(sql, emails.map(email => email.id));
+    return emails.length;
+  }
 
   async close(): Promise<void> {
     if (this.db) {
