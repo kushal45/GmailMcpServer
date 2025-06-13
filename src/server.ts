@@ -5,11 +5,9 @@ import {
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
-  Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { AuthManager } from './auth/AuthManager.js';
 import { EmailFetcher } from './email/EmailFetcher.js';
-import { CategorizationEngine } from './categorization/CategorizationEngine.js';
 import { SearchEngine } from './search/SearchEngine.js';
 import { ArchiveManager } from './archive/ArchiveManager.js';
 import { DeleteManager } from './delete/DeleteManager.js';
@@ -18,18 +16,23 @@ import { CacheManager } from './cache/CacheManager.js';
 import { logger } from './utils/logger.js';
 import { toolDefinitions } from './tools/definitions.js';
 import { handleToolCall } from './tools/handler.js';
+import { JobQueue } from './database/JobQueue.js';
+import { CategorizationEngine } from './categorization/CategorizationEngine.js';
+import { CategorizationWorker } from './categorization/CategorizationWorker.js';
+import { JobStatusStore } from './database/JobStatusStore.js';
 
 export class GmailMcpServer {
   private server: Server;
   private authManager: AuthManager;
   private emailFetcher: EmailFetcher;
-  private categorizationEngine: CategorizationEngine;
   private searchEngine: SearchEngine;
   private archiveManager: ArchiveManager;
   private deleteManager: DeleteManager;
   private databaseManager: DatabaseManager;
   private cacheManager: CacheManager;
-
+  private jobQueue: JobQueue;
+  private categorizationEngine: CategorizationEngine;
+  private jobStatusStore: JobStatusStore;
   constructor() {
     this.server = new Server(
       {
@@ -46,14 +49,17 @@ export class GmailMcpServer {
     );
 
     // Initialize managers
-    this.databaseManager = new DatabaseManager();
+    this.databaseManager= DatabaseManager.getInstance();
+    this.jobStatusStore = JobStatusStore.getInstance();
     this.cacheManager = new CacheManager();
     this.authManager = new AuthManager();
     this.emailFetcher = new EmailFetcher(this.databaseManager,this.authManager,this.cacheManager);
-    this.categorizationEngine = new CategorizationEngine(this.databaseManager, this.cacheManager);
     this.searchEngine = new SearchEngine(this.databaseManager, this.emailFetcher);
     this.archiveManager = new ArchiveManager(this.authManager, this.databaseManager);
     this.deleteManager = new DeleteManager(this.authManager, this.databaseManager);
+    this.jobQueue = new JobQueue();
+    this.categorizationEngine = new CategorizationEngine(this.databaseManager, this.cacheManager);
+
 
     this.setupHandlers();
     this.setupErrorHandling();
@@ -62,7 +68,8 @@ export class GmailMcpServer {
   private setupHandlers() {
     // The MCP SDK handles the initialize request automatically
     // We just need to handle tools listing and tool calls
-    
+    const categorizationWorker = new CategorizationWorker(this.jobQueue, this.categorizationEngine);
+    categorizationWorker.start();
     // List available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       console.error('[DEBUG] Handling list tools request');
@@ -82,12 +89,13 @@ export class GmailMcpServer {
           {
             authManager: this.authManager,
             emailFetcher: this.emailFetcher,
-            categorizationEngine: this.categorizationEngine,
             searchEngine: this.searchEngine,
             archiveManager: this.archiveManager,
             deleteManager: this.deleteManager,
             databaseManager: this.databaseManager,
             cacheManager: this.cacheManager,
+            jobQueue: this.jobQueue,
+            categorizationEngine: this.categorizationEngine,
           }
         );
         return result;
@@ -129,12 +137,10 @@ export class GmailMcpServer {
     try {
       // Initialize database
       await this.databaseManager.initialize();
+      await this.jobStatusStore.initialize();
       logger.info('Database initialized');
 
-      // Initialize cache
-      //await this.cacheManager.initialize();
-      logger.info('Cache initialized');
-
+      
       // Initialize auth manager (but don't check for valid auth yet)
       try {
         await this.authManager.initialize();

@@ -5,10 +5,16 @@ import { fileURLToPath } from 'url';
 import { logger } from '../utils/logger.js';
 import { EmailIndex, ArchiveRule, ArchiveRecord, SavedSearch,SearchCriteria, SearchEngineCriteria } from '../types/index.js';
 
+interface RunResult {
+  lastID?: number; // For INSERT statements
+  changes: number; // For INSERT, UPDATE, DELETE statements
+}
+
 export class DatabaseManager {
   private db: sqlite3.Database | null = null;
   private dbPath: string;
   private initialized: boolean = false;
+  private static instance: DatabaseManager | null = null;
 
   constructor() {
     const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +26,13 @@ export class DatabaseManager {
     // Always resolve storage path relative to project root, not cwd or absolute
     const storagePath = path.join(projectRoot, process.env.STORAGE_PATH || 'data');
     this.dbPath = path.join(storagePath, 'gmail-mcp.db');
+  }
+
+  static getInstance(): DatabaseManager {
+    if (!this.instance) {
+      this.instance = new DatabaseManager();
+    }
+    return this.instance;
   }
 
   async initialize(): Promise<void> {
@@ -123,7 +136,27 @@ export class DatabaseManager {
         data TEXT NOT NULL,
         expires_at INTEGER NOT NULL,
         created_at INTEGER DEFAULT (strftime('%s', 'now'))
-      )`
+      )`,
+
+      // Job status table for tracking async jobs
+      `CREATE TABLE IF NOT EXISTS job_statuses (
+        job_id TEXT PRIMARY KEY,
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED')),
+        request_params TEXT,
+        progress INTEGER,
+        results TEXT,
+        error_details TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        completed_at INTEGER,
+        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+      )`,
+
+      // Create index for job status queries
+      `CREATE INDEX IF NOT EXISTS idx_job_status ON job_statuses(status)`,
+      `CREATE INDEX IF NOT EXISTS idx_job_type ON job_statuses(job_type)`,
+      `CREATE INDEX IF NOT EXISTS idx_job_created_at ON job_statuses(created_at)`
     ];
 
     for (const query of queries) {
@@ -131,33 +164,95 @@ export class DatabaseManager {
     }
   }
 
-  // Promisified database methods
-  private run(sql: string, params: any[] = []): Promise<void> {
+ // Method for executing DML/DDL statements (INSERT, UPDATE, DELETE, CREATE, ALTER)
+  // Now returns RunResult for INSERT/UPDATE/DELETE, or void for others.
+  private run(sql: string, params: any[] = []): Promise<RunResult | void> {
     return new Promise((resolve, reject) => {
       // If params is a 2D array, treat as multiple runs in a transaction
       if (Array.isArray(params[0])) {
         this.db!.serialize(() => {
-          this.db!.run('BEGIN TRANSACTION');
-          for (const paramSet of params) {
-            this.db!.run(sql, paramSet, function(err) {
-              if (err) {
-                reject(err);
-              }
-            });
-          }
-          this.db!.run('COMMIT', (err) => {
-            if (err) reject(err);
-            else resolve();
+          this.db!.run('BEGIN TRANSACTION', (beginErr) => {
+            if (beginErr) {
+              return reject(beginErr);
+            }
+
+            let totalChanges = 0;
+            let transactionError: Error | null = null;
+
+            for (const paramSet of params) {
+              // Using a bound function to capture 'this' for each run
+              this.db!.run(sql, paramSet, function(err) {
+                if (err) {
+                  transactionError = err;
+                  // Log the error but continue to allow the transaction to rollback
+                  console.error(`Error during batch run for query "${sql}" with params ${paramSet}:`, err);
+                  // We can't directly reject here as it's inside a loop and would not
+                  // allow the transaction to rollback properly from this context.
+                  // Instead, we mark an error and handle it in the COMMIT/ROLLBACK callback.
+                } else {
+                  // Handle cases where context might be undefined (e.g., in test environments)
+                  const changes = (this && typeof this.changes === 'number') ? this.changes : 0;
+                  totalChanges += changes; // Accumulate changes
+                }
+              });
+            }
+
+            if (transactionError) {
+              this.db!.run('ROLLBACK', (rollbackErr) => {
+                if (rollbackErr) {
+                  console.error('Error during transaction rollback:', rollbackErr);
+                  reject(new Error(`Transaction failed: ${transactionError?.message}. Also, rollback failed: ${rollbackErr.message}`));
+                } else {
+                  reject(transactionError); // Reject with the original transaction error
+                }
+              });
+            } else {
+              this.db!.run('COMMIT', (commitErr) => {
+                if (commitErr) {
+                  // If commit fails, attempt rollback
+                  this.db!.run('ROLLBACK', (rollbackDuringCommitErr) => {
+                    if (rollbackDuringCommitErr) {
+                      console.error('Error during commit and subsequent rollback:', rollbackDuringCommitErr);
+                      reject(new Error(`Commit failed: ${commitErr.message}. Also, rollback during commit failed: ${rollbackDuringCommitErr.message}`));
+                    } else {
+                      reject(commitErr); // Reject with the commit error
+                    }
+                  });
+                } else {
+                  // For batch operations, we return the total changes across all statements
+                  resolve({ changes: totalChanges });
+                }
+              });
+            }
           });
         });
       } else {
         // Single run
         this.db!.run(sql, params, function(err) {
-          if (err) reject(err);
-          else resolve();
+          if (err) {
+            reject(err);
+          } else {
+            // 'this' refers to the statement object in the callback
+            // It has 'lastID' for inserts and 'changes' for inserts/updates/deletes
+            // Handle cases where context might be undefined (e.g., in test environments)
+            const changes = (this && typeof this.changes === 'number') ? this.changes : 0;
+            const lastID = (this && typeof this.lastID === 'number') ? this.lastID : undefined;
+            
+            const result: RunResult = {
+              changes: changes, // Number of rows actually changed
+              lastID: lastID,   // ID of the last inserted row
+            };
+            resolve(result);
+          }
         });
       }
     });
+  }
+
+  // Public method for non-query operations, leveraging the private run
+  // Returns RunResult for DML, or void for DDL.
+  public execute(sql: string, params: any[] = []): Promise<RunResult | void> {
+    return this.run(sql, params);
   }
 
   private get(sql: string, params: any[] = []): Promise<any> {
@@ -542,5 +637,159 @@ export class DatabaseManager {
   
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  // Job status methods
+  async createJobStatusTable(): Promise<void> {
+    const query = `
+      CREATE TABLE IF NOT EXISTS job_statuses (
+        job_id TEXT PRIMARY KEY,
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED')),
+        request_params TEXT,
+        progress INTEGER,
+        results TEXT,
+        error_details TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        completed_at INTEGER,
+        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+      )
+    `;
+    await this.run(query);
+    
+    // Create indexes
+    await this.run('CREATE INDEX IF NOT EXISTS idx_job_status ON job_statuses(status)');
+    await this.run('CREATE INDEX IF NOT EXISTS idx_job_type ON job_statuses(job_type)');
+    await this.run('CREATE INDEX IF NOT EXISTS idx_job_created_at ON job_statuses(created_at)');
+  }
+
+  async insertJob(job: any): Promise<void> {
+    const sql = `
+      INSERT INTO job_statuses (
+        job_id, job_type, status, request_params, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'))
+    `;
+    
+    await this.run(sql, [
+      job.job_id,
+      job.job_type,
+      job.status,
+      JSON.stringify(job.request_params),
+      Math.floor(job.created_at.getTime() / 1000)
+    ]);
+  }
+
+  async getJob(jobId: string): Promise<any | null> {
+    const row = await this.get('SELECT * FROM job_statuses WHERE job_id = ?', [jobId]);
+    if (!row) return null;
+    
+    return {
+      job_id: row.job_id,
+      job_type: row.job_type,
+      status: row.status,
+      request_params: JSON.parse(row.request_params || '{}'),
+      progress: row.progress,
+      results: row.results ? JSON.parse(row.results) : null,
+      error_details: row.error_details,
+      created_at: new Date(row.created_at * 1000),
+      started_at: row.started_at ? new Date(row.started_at * 1000) : undefined,
+      completed_at: row.completed_at ? new Date(row.completed_at * 1000) : undefined
+    };
+  }
+
+  async updateJob(jobId: string, updates: any): Promise<void> {
+    const fields: string[] = [];
+    const values: any[] = [];
+    
+    if (updates.status !== undefined) {
+      fields.push('status = ?');
+      values.push(updates.status);
+    }
+    
+    if (updates.progress !== undefined) {
+      fields.push('progress = ?');
+      values.push(updates.progress);
+    }
+    
+    if (updates.results !== undefined) {
+      fields.push('results = ?');
+      values.push(JSON.stringify(updates.results));
+    }
+    
+    if (updates.error_details !== undefined) {
+      fields.push('error_details = ?');
+      values.push(updates.error_details);
+    }
+    
+    if (updates.started_at !== undefined) {
+      fields.push('started_at = ?');
+      values.push(Math.floor(updates.started_at.getTime() / 1000));
+    }
+    
+    if (updates.completed_at !== undefined) {
+      fields.push('completed_at = ?');
+      values.push(Math.floor(updates.completed_at.getTime() / 1000));
+    }
+    
+    fields.push('updated_at = strftime(\'%s\', \'now\')');
+    
+    if (fields.length === 0) return;
+    
+    const sql = `UPDATE job_statuses SET ${fields.join(', ')} WHERE job_id = ?`;
+    values.push(jobId);
+    
+    await this.run(sql, values);
+  }
+
+  async listJobs(filters: any = {}): Promise<any[]> {
+    let sql = 'SELECT * FROM job_statuses WHERE 1=1';
+    const params: any[] = [];
+    
+    if (filters.job_type) {
+      sql += ' AND job_type = ?';
+      params.push(filters.job_type);
+    }
+    
+    if (filters.status) {
+      sql += ' AND status = ?';
+      params.push(filters.status);
+    }
+    
+    sql += ' ORDER BY created_at DESC';
+    
+    if (filters.limit) {
+      sql += ' LIMIT ?';
+      params.push(filters.limit);
+      
+      if (filters.offset) {
+        sql += ' OFFSET ?';
+        params.push(filters.offset);
+      }
+    }
+    
+    const rows = await this.all(sql, params);
+    return rows.map(row => ({
+      job_id: row.job_id,
+      job_type: row.job_type,
+      status: row.status,
+      request_params: JSON.parse(row.request_params || '{}'),
+      progress: row.progress,
+      results: row.results ? JSON.parse(row.results) : null,
+      error_details: row.error_details,
+      created_at: new Date(row.created_at * 1000),
+      started_at: row.started_at ? new Date(row.started_at * 1000) : undefined,
+      completed_at: row.completed_at ? new Date(row.completed_at * 1000) : undefined
+    }));
+  }
+
+  async deleteJob(jobId: string): Promise<void> {
+    await this.run('DELETE FROM job_statuses WHERE job_id = ?', [jobId]);
+  }
+
+  async deleteJobsOlderThan(date: Date): Promise<number> {
+    const timestamp = Math.floor(date.getTime() / 1000);
+    const result = await this.execute('DELETE FROM job_statuses WHERE created_at < ?', [timestamp]);
+    return result?.changes || 0;
   }
 }

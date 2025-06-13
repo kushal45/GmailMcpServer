@@ -1,83 +1,79 @@
-#!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import dotenv from "dotenv";
-import { GmailMcpServer } from "./server.js";
-import path from "path";
-import { fileURLToPath } from "url";
+import { DatabaseManager } from './database/DatabaseManager.js';
+import { JobQueue } from './database/JobQueue.js';
+import { JobStatusStore } from './database/JobStatusStore.js';
+import { CategorizationStore } from './categorization/CategorizationStore.js';
+import { CategorizationWorker } from './categorization/CategorizationWorker.js';
+import { logger } from './utils/logger.js';
+import { CategorizationEngine } from './categorization/CategorizationEngine.js';
+import { CacheManager } from './cache/CacheManager.js';
 
-/**
- * Main entry point for the Gmail MCP server.
- * Loads environment variables, initializes the server, and connects to transport.
- */
-
+// Example usage of the implemented classes
 async function main() {
   try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    dotenv.config({
-      path: path.join(__dirname, "../.env"),
-      override: true,
-    });
-    console.error(
-      "environment variables loaded",
-      JSON.stringify({
-        env: {
-          NODE_ENV: process.env.NODE_ENV,
-          ARCHIVE_PATH: process.env.ARCHIVE_PATH,
-          GMAIL_CLIENT_ID: process.env.GMAIL_CLIENT_ID,
-          GMAIL_CLIENT_SECRET: process.env.GMAIL_CLIENT_SECRET,
-          GMAIL_REDIRECT_URI: process.env.GMAIL_REDIRECT_URI,
-          GMAIL_REFRESH_TOKEN: process.env.GMAIL_REFRESH_TOKEN,
-          GMAIL_USER_EMAIL: process.env.GMAIL_USER_EMAIL,
-          MCP_SERVER_PORT: process.env.MCP_SERVER_PORT || "3000",
-          GMAIL_BATCH_SIZE: process.env.GMAIL_BATCH_SIZE,
-        },
-      })
+    // Initialize database
+    const dbManager = new DatabaseManager();
+    await dbManager.initialize();
+    
+    // Initialize stores
+    const jobStatusStore = new JobStatusStore(dbManager);
+    await jobStatusStore.initialize();
+    
+    const categorizationEngine = new CategorizationEngine(dbManager, new CacheManager);
+    
+    // Initialize job queue
+    const jobQueue = new JobQueue();
+    
+    // Initialize categorization worker
+    const categorizationWorker = new CategorizationWorker(
+      jobQueue,
+      categorizationEngine
     );
-    console.error("Starting Gmail MCP server...");
-    const server = new GmailMcpServer();
-    const transport = new StdioServerTransport();
-
-    console.error("Connecting to transport...");
-    await server.connect(transport);
-    console.error("Server connected successfully");
-
-    // Handle graceful shutdown
-    process.on("SIGINT", async () => {
-      console.error("Received SIGINT");
-      await server.close();
-      process.exit(0);
+    
+    // Start worker
+    categorizationWorker.start();
+    
+    // Example: Create a categorization job
+    const jobId = await jobStatusStore.createJob('categorize_emails', {
+      year: 2023,
+      forceRefresh: false
     });
-
-    process.on("SIGTERM", async () => {
-      console.error("Received SIGTERM");
-      await server.close();
+    
+    logger.info(`Created job with ID: ${jobId}`);
+    
+    // Add job to queue
+    await jobQueue.addJob(jobId);
+    
+    // Example: Poll for job status
+    const pollInterval = setInterval(async () => {
+      const job = await jobStatusStore.getJobStatus(jobId);
+      
+      if (!job) {
+        logger.error('Job not found');
+        clearInterval(pollInterval);
+        return;
+      }
+      
+      logger.info(`Job status: ${job.status}, Progress: ${job.progress || 0}%`);
+      
+      if (job.status === 'COMPLETED' || job.status === 'FAILED') {
+        logger.info('Job finished with result:', job.results || job.error_details);
+        clearInterval(pollInterval);
+      }
+    }, 1000);
+    
+    // Keep the process running for demonstration
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      categorizationWorker.stop();
+      dbManager.close();
       process.exit(0);
-    });
-
-    // Keep the process alive
-    process.stdin.resume();
+    }, 30000);
   } catch (error) {
-    console.error("Failed to start server:", error);
-    process.exit(1);
+    logger.error('Error in main:', error);
   }
 }
 
-// Handle unhandled promise rejections
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection at:", promise, "reason:", reason);
-  // Don't exit on unhandled rejection - let the server continue
-});
-
-process.on("uncaughtException", (error) => {
-  console.error("Uncaught Exception:", error);
-  // Exit on uncaught exception
-  process.exit(1);
-});
-
-// Run the server
-main().catch((error) => {
-  console.error("Main function error:", error);
-  process.exit(1);
-});
+// Run the example if this file is executed directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}

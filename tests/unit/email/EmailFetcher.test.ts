@@ -9,9 +9,9 @@ import {
 import { EmailFetcher } from "../../../src/email/EmailFetcher.js";
 import { EmailIndex, PriorityCategory } from "../../../src/types/index.js";
 
+ import { createMockDatabase } from '../../utils/testHelpers';
+
 // Mock dependencies
-jest.mock("../../../build/auth/AuthManager");
-jest.mock("../../../build/cache/CacheManager");
 
 describe("EmailFetcher", () => {
   let emailFetcher: EmailFetcher;
@@ -22,7 +22,7 @@ describe("EmailFetcher", () => {
 
   beforeEach(() => {
     // Use helper to create properly typed mock database manager
-    const { createMockDatabase } = require('../../utils/testHelpers');
+   
     mockDbManager = createMockDatabase();
     mockAuthManager = {
       getGmailClient: jest.fn(),

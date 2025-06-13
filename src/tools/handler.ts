@@ -1,23 +1,26 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { AuthManager } from '../auth/AuthManager.js';
 import { EmailFetcher } from '../email/EmailFetcher.js';
-import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
 import { SearchEngine } from '../search/SearchEngine.js';
 import { ArchiveManager } from '../archive/ArchiveManager.js';
 import { DeleteManager } from '../delete/DeleteManager.js';
 import { DatabaseManager } from '../database/DatabaseManager.js';
 import { CacheManager } from '../cache/CacheManager.js';
 import { logger } from '../utils/logger.js';
+import { JobStatusStore } from '../database/JobStatusStore.js';
+import { JobQueue } from '../database/JobQueue.js';
+import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
 
 interface ToolContext {
   authManager: AuthManager;
   emailFetcher: EmailFetcher;
-  categorizationEngine: CategorizationEngine;
   searchEngine: SearchEngine;
   archiveManager: ArchiveManager;
   deleteManager: DeleteManager;
   databaseManager: DatabaseManager;
   cacheManager: CacheManager;
+  jobQueue: JobQueue;
+  categorizationEngine:CategorizationEngine
 }
 
 export async function handleToolCall(
@@ -158,17 +161,36 @@ async function handleCategorizeEmails(args: any, context: ToolContext) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   logger.info('Categorizing emails with args:', JSON.stringify(args, null, 2));
-  const result = await context.categorizationEngine.categorizeEmails({
-    forceRefresh: args.force_refresh || false,
-    year: args.year
-  });
+  try {
+    // Assume JobStatusStore and JobQueue interfaces are available (e.g., injected dependencies)
+    // Call a JobService or directly interact with the JobStatusStore to create a job entry
+    const jobStatusStore = new JobStatusStore(context.databaseManager);
+    const jobType = 'categorize_emails';
+    const jobId = await jobStatusStore.createJob(
+        jobType, // job_type
+        {
+            forceRefresh: args.force_refresh || false,
+            year: args.year
+        }
+    );
 
-  return {
-    content: [{
-      type: 'text',
-      text: JSON.stringify(result, null, 2)
-    }]
-  };
+    // Enqueue the job for a worker to pick up
+    await context.jobQueue.addJob(jobId);
+
+    // 3. Immediate Response
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ jobId }, null, 2)
+      }]
+    };
+} catch (error) {
+    console.error('Failed to submit categorize_emails job:', error);
+    // Handle error appropriately, perhaps return a JobFailed status or throw a server error
+    throw new Error('Could not initiate email categorization job.');
+}
+
+  
 }
 
 async function handleGetEmailStats(args: any, context: ToolContext) {
