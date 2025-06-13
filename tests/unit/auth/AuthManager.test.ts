@@ -195,9 +195,12 @@ describe("AuthManager", () => {
       );
     });
 
-    it("should throw error if no refresh token available", async () => {
-      mockOAuth2Client.credentials = { access_token: "token" };
-
+    it("should throw error if refresh token is empty", async () => {
+      mockOAuth2Client.credentials = {
+        access_token: "token",
+        refresh_token: '' // empty refresh token
+      };
+    
       await expect(authManager.refreshToken()).rejects.toThrow(
         "No refresh token available"
       );

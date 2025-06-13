@@ -190,6 +190,7 @@ export class DateSizeAnalyzer implements IDateSizeAnalyzer {
       logger.error("DateSizeAnalyzer: Cache retrieval failed", {
         cacheKey,
         error: error instanceof Error ? error.message : "Unknown error",
+        stack: new Error().stack,
       });
       return null;
     }
@@ -208,6 +209,7 @@ export class DateSizeAnalyzer implements IDateSizeAnalyzer {
       logger.error("DateSizeAnalyzer: Cache storage failed", {
         cacheKey,
         error: error instanceof Error ? error.message : "Unknown error",
+        stack: new Error().stack,
       });
     }
   }

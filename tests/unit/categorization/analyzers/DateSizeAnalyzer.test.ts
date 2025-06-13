@@ -358,7 +358,14 @@ describe('DateSizeAnalyzer Unit Tests', () => {
 
   describe('Caching Behavior', () => {
     beforeEach(() => {
-      mockCacheManager.get.mockReturnValue(null);
+      // Populate the cache with a mock result
+      const cachedResult: DateSizeResult = {
+        ageCategory: 'recent',
+        sizeCategory: 'small',
+        recencyScore: 0.9,
+        sizePenalty: 0.1
+      };
+      mockCacheManager.get.mockReturnValue(cachedResult);
       mockCacheManager.set.mockReturnValue(undefined);
     });
 
@@ -369,13 +376,13 @@ describe('DateSizeAnalyzer Unit Tests', () => {
     });
 
     it('should return cached result when available', async () => {
+      // Populate the cache with a mock result
       const cachedResult: DateSizeResult = {
         ageCategory: 'recent',
         sizeCategory: 'small',
         recencyScore: 0.9,
         sizePenalty: 0.1
       };
-
       mockCacheManager.get.mockReturnValue(cachedResult);
 
       const result = await analyzer.analyzeDateSize(testContext);
