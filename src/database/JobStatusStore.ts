@@ -6,22 +6,69 @@ import { Job, JobStatus } from './jobStatusTypes.js';
 export class JobStatusStore {
   private dbManager: DatabaseManager;
   private static instance: JobStatusStore | null = null;
+  private static instanceId: string = Math.random().toString(36).substr(2, 9);
 
-  constructor(dbManager: DatabaseManager) {
-    this.dbManager = dbManager;
+  constructor(dbManager?: DatabaseManager) {
+    // Prevent direct instantiation outside of getInstance()
+    if (JobStatusStore.instance && JobStatusStore.instance !== this) {
+      const error = `JobStatusStore: Attempted to create multiple instances. Use getInstance() instead. Current instance ID: ${JobStatusStore.instanceId}`;
+      logger.error(error);
+      throw new Error(error);
+    }
+
+    // Always use the DatabaseManager singleton
+    this.dbManager = dbManager || DatabaseManager.getInstance();
+    
+    // Validate that we're using the same DatabaseManager instance
+    const dbInstanceId = this.dbManager.getInstanceId();
+    logger.debug(`JobStatusStore initialized with DatabaseManager instance ID: ${dbInstanceId}`, {
+      jobStatusStoreInstanceId: JobStatusStore.instanceId,
+      databaseManagerInstanceId: dbInstanceId,
+      timestamp: new Date().toISOString()
+    });
   }
 
   static getInstance(): JobStatusStore {
     if (!this.instance) {
-      this.instance = new JobStatusStore(DatabaseManager.getInstance());
+      // Ensure DatabaseManager singleton exists first
+      DatabaseManager.validateSingletonIntegrity();
+      this.instance = new JobStatusStore();
+      logger.debug(`JobStatusStore singleton created with ID: ${this.instanceId}`, {
+        timestamp: new Date().toISOString(),
+        instanceId: this.instanceId
+      });
     }
     return this.instance;
   }
+
+  static validateSingletonIntegrity(): void {
+    if (!this.instance) {
+      throw new Error('JobStatusStore: No singleton instance exists. Call getInstance() first.');
+    }
+    // Also validate the underlying DatabaseManager
+    DatabaseManager.validateSingletonIntegrity();
+    logger.debug(`JobStatusStore singleton validation passed. Instance ID: ${this.instanceId}`);
+  }
+
+  getInstanceId(): string {
+    return JobStatusStore.instanceId;
+  }
   async initialize(): Promise<void> {
+    this.validateDatabaseInitialization();
     await this.dbManager.createJobStatusTable();
   }
 
+  private validateDatabaseInitialization(): void {
+    if (!this.dbManager.isInitialized()) {
+      const error = `JobStatusStore: Database not initialized. Cannot perform operations. JobStatusStore ID: ${this.getInstanceId()}, DatabaseManager ID: ${this.dbManager.getInstanceId()}`;
+      logger.error(error);
+      throw new Error(error);
+    }
+  }
+
   async createJob(job_type: string, request_params: any): Promise<string> {
+    this.validateDatabaseInitialization();
+    
     const job_id = `J${Date.now()}${Math.floor(Math.random() * 1000)}`;
     
     try {
@@ -33,7 +80,7 @@ export class JobStatusStore {
         created_at: new Date()
       });
       
-      logger.info(`Created new job: ${job_id} of type: ${job_type}`);
+      logger.debug(`Created new job: ${job_id} of type: ${job_type} (JobStatusStore ID: ${this.getInstanceId()})`);
       return job_id;
     } catch (error) {
       logger.error(`Failed to create job: ${error}`);
@@ -42,7 +89,10 @@ export class JobStatusStore {
   }
 
   async getJobStatus(job_id: string): Promise<Job | null> {
+    this.validateDatabaseInitialization();
+    
     try {
+      logger.debug(`Getting job status for ${job_id} (JobStatusStore ID: ${this.getInstanceId()}, DatabaseManager ID: ${this.dbManager.getInstanceId()})`);
       const job = await this.dbManager.getJob(job_id);
       return job;
     } catch (error) {
@@ -52,24 +102,25 @@ export class JobStatusStore {
   }
 
   async updateJobStatus(
-    job_id: string, 
-    status: JobStatus, 
+    job_id: string,
+    status: JobStatus,
     updates: {
       progress?: number;
       results?: any;
       error_details?: string;
       started_at?: Date;
       completed_at?: Date;
-      emailIds?: string[];
     } = {}
   ): Promise<void> {
+    this.validateDatabaseInitialization();
+    
     try {
       await this.dbManager.updateJob(job_id, {
         status,
         ...updates
       });
       
-      logger.info(`Updated job ${job_id} status to ${status}`);
+      logger.debug(`Updated job ${job_id} status to ${status} (JobStatusStore ID: ${this.getInstanceId()})`);
     } catch (error) {
       logger.error(`Failed to update job status for ${job_id}: ${error}`);
       throw error;
@@ -82,6 +133,8 @@ export class JobStatusStore {
     limit?: number;
     offset?: number;
   } = {}): Promise<Job[]> {
+    this.validateDatabaseInitialization();
+    
     try {
       return await this.dbManager.listJobs(filters);
     } catch (error) {
@@ -91,9 +144,11 @@ export class JobStatusStore {
   }
 
   async deleteJob(job_id: string): Promise<void> {
+    this.validateDatabaseInitialization();
+    
     try {
       await this.dbManager.deleteJob(job_id);
-      logger.info(`Deleted job ${job_id}`);
+      logger.debug(`Deleted job ${job_id} (JobStatusStore ID: ${this.getInstanceId()})`);
     } catch (error) {
       logger.error(`Failed to delete job ${job_id}: ${error}`);
       throw error;
@@ -101,12 +156,14 @@ export class JobStatusStore {
   }
 
   async cleanupOldJobs(olderThanDays: number = 30): Promise<number> {
+    this.validateDatabaseInitialization();
+    
     try {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
       
       const deletedCount = await this.dbManager.deleteJobsOlderThan(cutoffDate);
-      logger.info(`Cleaned up ${deletedCount} jobs older than ${olderThanDays} days`);
+      logger.debug(`Cleaned up ${deletedCount} jobs older than ${olderThanDays} days (JobStatusStore ID: ${this.getInstanceId()})`);
       
       return deletedCount;
     } catch (error) {

@@ -110,7 +110,7 @@ export class AnalyzerFactory {
 
     const finalConfig = config || defaultConfig;
     
-    logger.info('AnalyzerFactory: Creating ImportanceAnalyzer', { 
+    logger.debug('AnalyzerFactory: Creating ImportanceAnalyzer', { 
       rulesCount: finalConfig.rules.length 
     });
 
@@ -144,7 +144,7 @@ export class AnalyzerFactory {
 
     const finalConfig = config || defaultConfig;
     
-    logger.info('AnalyzerFactory: Creating DateSizeAnalyzer', { 
+    logger.debug('AnalyzerFactory: Creating DateSizeAnalyzer', { 
       sizeThresholds: finalConfig.sizeThresholds,
       ageCategories: finalConfig.ageCategories
     });
@@ -210,7 +210,7 @@ export class AnalyzerFactory {
 
     const finalConfig = config || defaultConfig;
     
-    logger.info('AnalyzerFactory: Creating LabelClassifier', { 
+    logger.debug('AnalyzerFactory: Creating LabelClassifier', { 
       spamLabelsCount: finalConfig.labelMappings.spamLabels.length,
       promotionalLabelsCount: finalConfig.labelMappings.promotionalLabels.length,
       socialLabelsCount: finalConfig.labelMappings.socialLabels.length
@@ -231,7 +231,7 @@ export class AnalyzerFactory {
     dateSizeAnalyzer: IDateSizeAnalyzer;
     labelClassifier: ILabelClassifier;
   } {
-    logger.info('AnalyzerFactory: Creating all analyzers');
+    logger.debug('AnalyzerFactory: Creating all analyzers');
 
     return {
       importanceAnalyzer: this.createImportanceAnalyzer(configs?.importance),
@@ -245,7 +245,7 @@ export class AnalyzerFactory {
    */
   setDatabaseManager(databaseManager: DatabaseManager): void {
     this.databaseManager = databaseManager;
-    logger.info('AnalyzerFactory: Database manager updated');
+    logger.debug('AnalyzerFactory: Database manager updated');
   }
 
   /**
@@ -253,6 +253,6 @@ export class AnalyzerFactory {
    */
   setCacheManager(cacheManager: CacheManager): void {
     this.cacheManager = cacheManager;
-    logger.info('AnalyzerFactory: Cache manager updated');
+    logger.debug('AnalyzerFactory: Cache manager updated');
   }
 }

@@ -15,8 +15,21 @@ export class DatabaseManager {
   private dbPath: string;
   private initialized: boolean = false;
   private static instance: DatabaseManager | null = null;
+  private static instanceId: string = Math.random().toString(36).substr(2, 9);
 
   constructor() {
+    // Prevent direct instantiation outside of getInstance()
+    if (DatabaseManager.instance && DatabaseManager.instance !== this) {
+      const error = `DatabaseManager: Attempted to create multiple instances. Use getInstance() instead. Current instance ID: ${DatabaseManager.instanceId}`;
+      logger.error(error);
+      throw new Error(error);
+    }
+
+    // Set the static instance if it's not already set (first time construction)
+    if (!DatabaseManager.instance) {
+      DatabaseManager.instance = this;
+    }
+
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
     // Determine the project root directory
@@ -31,8 +44,23 @@ export class DatabaseManager {
   static getInstance(): DatabaseManager {
     if (!this.instance) {
       this.instance = new DatabaseManager();
+      logger.info(`DatabaseManager singleton created with ID: ${this.instanceId}`, {
+        timestamp: new Date().toISOString(),
+        instanceId: this.instanceId
+      });
     }
     return this.instance;
+  }
+
+  static validateSingletonIntegrity(): void {
+    if (!this.instance) {
+      throw new Error('DatabaseManager: No singleton instance exists. Call getInstance() first.');
+    }
+    logger.info(`DatabaseManager singleton validation passed. Instance ID: ${this.instanceId}`);
+  }
+
+  getInstanceId(): string {
+    return DatabaseManager.instanceId;
   }
 
   async initialize(): Promise<void> {
@@ -59,7 +87,12 @@ export class DatabaseManager {
       await this.migrateToAnalyzerSchema();
       
       this.initialized = true;
-      logger.info('Database initialized successfully');
+      logger.info('Database initialized successfully', {
+        dbPath: this.dbPath,
+        dbExists: !!this.db,
+        initialized: this.initialized,
+        timestamp: new Date().toISOString()
+      });
     } catch (error) {
       logger.error('Failed to initialize database:', error);
       throw error;
@@ -346,7 +379,22 @@ export class DatabaseManager {
 
   private get(sql: string, params: any[] = []): Promise<any> {
     return new Promise((resolve, reject) => {
-      this.db!.get(sql, params, (err, row) => {
+      // Add initialization check and diagnostic logging
+      if (this.db === null) {
+        const errorMsg = `DatabaseManager.get() called before database initialization. DB state: null, initialized: ${this.initialized}, instanceId: ${this.getInstanceId()}`;
+        logger.error(errorMsg, { sql, params, stackTrace: new Error().stack });
+        reject(new Error(errorMsg));
+        return;
+      }
+      
+      if (!this.initialized) {
+        const warningMsg = `DatabaseManager.get() called while database is initializing. DB exists: ${!!this.db}, initialized: ${this.initialized}, instanceId: ${this.getInstanceId()}`;
+       // logger.warn(warningMsg, { sql, params });
+      } else {
+        logger.info(`DatabaseManager.get() accessing initialized database (instanceId: ${this.getInstanceId()})`, { sql });
+      }
+      
+      this.db.get(sql, params, (err, row) => {
         if (err) reject(err);
         else resolve(row);
       });
@@ -583,6 +631,12 @@ export class DatabaseManager {
       analysisTimestamp: row.analysis_timestamp ? new Date(row.analysis_timestamp) : undefined,
       analysisVersion: row.analysis_version || undefined
     };
+  }
+
+  async getEmailsByIds(ids: string[]): Promise<EmailIndex[]> {
+    const sql = `SELECT * FROM email_index WHERE id IN (${ids.map(() => '?').join(', ')})`;
+    const rows = await this.all(sql, ids);
+    return rows.map(row => this.rowToEmailIndex(row));
   }
 
   // Archive rule methods

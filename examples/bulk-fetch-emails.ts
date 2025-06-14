@@ -18,7 +18,7 @@ async function bulkFetchEmailsExample() {
     // Initialize managers
     const authManager = new AuthManager();
     const cacheManager = new CacheManager();
-    const databaseManager = new DatabaseManager(); // Assuming you have a DatabaseManager for persistence
+    const databaseManager = DatabaseManager.getInstance(); // Use singleton instance
     const emailFetcher = new EmailFetcher(authManager, cacheManager, databaseManager);
 
     // Example 1: Fetch details for specific message IDs

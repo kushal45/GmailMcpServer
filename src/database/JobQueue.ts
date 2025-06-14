@@ -15,13 +15,7 @@ export class JobQueue {
    */
   async addJob(jobId: string): Promise<void> {
     this.queue.push(jobId);
-    logger.info(`Added job ${jobId} to queue. Queue length: ${this.queue.length}`);
-    
-    // Start processing if not already in progress
-    if (!this.processing) {
-      this.processQueue();
-    }
-    
+    logger.debug(`Added job ${jobId} to queue. Queue length: ${this.queue.length}`);
     return Promise.resolve();
   }
 
@@ -32,7 +26,7 @@ export class JobQueue {
    */
   registerJobHandler(jobType: string, handler: (jobId: string) => Promise<void>): void {
     this.jobHandlers.set(jobType, handler);
-    logger.info(`Registered handler for job type: ${jobType}`);
+    logger.debug(`Registered handler for job type: ${jobType}`);
   }
 
   /**
@@ -57,35 +51,6 @@ export class JobQueue {
     return this.queue.length;
   }
 
-  /**
-   * Process the queue asynchronously
-   */
-  private async processQueue(): Promise<void> {
-    if (this.processing || this.queue.length === 0) {
-      return;
-    }
-    
-    this.processing = true;
-    
-    try {
-      while (this.queue.length > 0) {
-        const jobId = await this.retrieveJob();
-        
-        if (jobId) {
-          // In a real implementation, you would determine the job type
-          // and call the appropriate handler
-          logger.info(`Processing job ${jobId}`);
-          
-          // For now, we'll just log that we processed it
-          logger.info(`Processed job ${jobId}`);
-        }
-      }
-    } catch (error) {
-      logger.error(`Error processing job queue: ${error}`);
-    } finally {
-      this.processing = false;
-    }
-  }
 
   /**
    * Clear all jobs from the queue
@@ -93,6 +58,6 @@ export class JobQueue {
   clearQueue(): void {
     const count = this.queue.length;
     this.queue = [];
-    logger.info(`Cleared ${count} jobs from queue`);
+    logger.debug(`Cleared ${count} jobs from queue`);
   }
 }

@@ -9,7 +9,7 @@ import { toolRegistry } from '../ToolRegistry.js';
 
 export function registerEmailTools() {
   // Initialize required services
-  const dbManager = new DatabaseManager();
+  const dbManager = DatabaseManager.getInstance();
   const authManager = new AuthManager();
   const cacheManager = new CacheManager();
   
@@ -102,7 +102,7 @@ export function registerEmailTools() {
 
   // categorize email tool
   const categorizeEmailTool: Tool = {
-    name: 'categorize_email',
+    name: 'categorize_emails',
     description: 'Categorize an email into high, medium, or low priority',
     inputSchema: {
       type: 'object',

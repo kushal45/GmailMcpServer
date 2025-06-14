@@ -31,7 +31,11 @@ export class CategorizationWorker {
     }
 
     this.isRunning = true;
-    logger.info('Starting categorization worker');
+    logger.info('Starting categorization worker', {
+      timestamp: new Date().toISOString(),
+      jobStatusStoreExists: !!this.jobStatusStore,
+      categorizationEngineExists: !!this.categorizationEngine
+    });
     this.processNextJob();
   }
 
@@ -63,7 +67,19 @@ export class CategorizationWorker {
 
       logger.info(`Processing categorization job: ${jobId}`);
       
-      // Get job details
+      // Validate singleton integrity and database initialization before processing
+      try {
+        JobStatusStore.validateSingletonIntegrity();
+        logger.info(`CategorizationWorker validation passed for job: ${jobId}`, {
+          timestamp: new Date().toISOString(),
+          jobStatusStoreId: this.jobStatusStore.getInstanceId(),
+          categorizationEngineExists: !!this.categorizationEngine
+        });
+      } catch (error) {
+        logger.error(`CategorizationWorker validation failed for job: ${jobId}`, { error });
+        throw error;
+      }
+      
       const job = await this.jobStatusStore.getJobStatus(jobId);
       
       if (!job) {
@@ -76,8 +92,7 @@ export class CategorizationWorker {
       await this.jobStatusStore.updateJobStatus(
         jobId, 
         JobStatus.IN_PROGRESS, 
-        { started_at: new Date(),
-         }
+        { started_at: new Date()}
       );
 
       try {
@@ -93,14 +108,13 @@ export class CategorizationWorker {
         });
         
         if (categorizationResult.processed === 0) {
-          logger.info('No emails to categorize');
+          //logger.info('No emails to categorize');
           await this.jobStatusStore.updateJobStatus(
             jobId,
             JobStatus.COMPLETED,
             {
               completed_at: new Date(),
-              emailIds: [],
-              results: { message: 'No emails to categorize' }
+              results: { message: 'No emails to categorize' ,emailIds:[]}
             }
           );
           this.processNextJob();
@@ -113,10 +127,10 @@ export class CategorizationWorker {
           JobStatus.COMPLETED,
           {
             completed_at: new Date(),
-            emailIds,
             results: {
               processed: categorizationResult.processed,
               categorized: categorizationResult.categories,
+              emailIds,
             }
           }
         );
@@ -131,7 +145,6 @@ export class CategorizationWorker {
           JobStatus.FAILED,
           {
             completed_at: new Date(),
-            emailIds: [],
             error_details: error instanceof Error ? error.message : String(error)
           }
         );

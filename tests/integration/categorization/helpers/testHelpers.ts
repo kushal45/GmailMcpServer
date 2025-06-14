@@ -21,7 +21,7 @@ export async function createTestDatabaseManager(): Promise<DatabaseManager> {
   // Set the storage path environment variable to our test directory
   process.env.STORAGE_PATH = testDbDir;
   
-  const dbManager = new DatabaseManager();
+  const dbManager = DatabaseManager.getInstance();
   await dbManager.initialize();
   
   return dbManager;
