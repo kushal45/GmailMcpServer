@@ -55,6 +55,31 @@ export interface EmailIndex {
   archived?: boolean;
   archiveDate?: Date;
   archiveLocation?: string;
+  
+  // Importance Analysis Results
+  importanceScore?: number;
+  importanceLevel?: 'high' | 'medium' | 'low';
+  importanceMatchedRules?: string[];
+  importanceConfidence?: number;
+  
+  // Date/Size Analysis Results
+  ageCategory?: 'recent' | 'moderate' | 'old';
+  sizeCategory?: 'small' | 'medium' | 'large';
+  recencyScore?: number;
+  sizePenalty?: number;
+  
+  // Label Classification Results
+  gmailCategory?: 'primary' | 'important' | 'spam' | 'promotions' | 'social' | 'updates' | 'forums';
+  spamScore?: number;
+  promotionalScore?: number;
+  socialScore?: number;
+  spamIndicators?: string[];
+  promotionalIndicators?: string[];
+  socialIndicators?: string[];
+  
+  // Analysis Metadata
+  analysisTimestamp?: Date;
+  analysisVersion?: string;
 }
 
 export interface SearchCriteria {
@@ -191,6 +216,26 @@ export interface DeleteOptions {
   dryRun: boolean;
   orderBy?: 'date' | 'size' | 'id' ;
   orderDirection?: 'ASC' | 'DESC';
+}
+
+export enum JobStatus {
+  PENDING = 'PENDING',
+  IN_PROGRESS = 'IN_PROGRESS',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED'
+}
+
+export interface Job {
+  job_id: string;
+  job_type: string;
+  status: JobStatus;
+  request_params: any;
+  progress?: number;
+  results?: any;
+  error_details?: string;
+  created_at: Date;
+  started_at?: Date;
+  completed_at?: Date;
 }
 
 export interface ExportOptions {

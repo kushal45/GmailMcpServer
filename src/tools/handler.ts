@@ -1,23 +1,27 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { AuthManager } from '../auth/AuthManager.js';
 import { EmailFetcher } from '../email/EmailFetcher.js';
-import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
 import { SearchEngine } from '../search/SearchEngine.js';
 import { ArchiveManager } from '../archive/ArchiveManager.js';
 import { DeleteManager } from '../delete/DeleteManager.js';
 import { DatabaseManager } from '../database/DatabaseManager.js';
 import { CacheManager } from '../cache/CacheManager.js';
 import { logger } from '../utils/logger.js';
+import { JobStatusStore } from '../database/JobStatusStore.js';
+import { JobQueue } from '../database/JobQueue.js';
+import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
+import { JobStatus } from '../database/jobStatusTypes.js';
 
 interface ToolContext {
   authManager: AuthManager;
   emailFetcher: EmailFetcher;
-  categorizationEngine: CategorizationEngine;
   searchEngine: SearchEngine;
   archiveManager: ArchiveManager;
   deleteManager: DeleteManager;
   databaseManager: DatabaseManager;
   cacheManager: CacheManager;
+  jobQueue: JobQueue;
+  categorizationEngine:CategorizationEngine
 }
 
 export async function handleToolCall(
@@ -68,6 +72,11 @@ export async function handleToolCall(
       case 'list_saved_searches':
         return await handleListSavedSearches(args, context);
       
+      case 'get_job_status':
+        return await handleGetJobStatus(args, context);
+      case 'get_email_details':
+        return await handleGetEmailDetails(args, context);
+
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${toolName}`);
     }
@@ -158,17 +167,39 @@ async function handleCategorizeEmails(args: any, context: ToolContext) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   logger.info('Categorizing emails with args:', JSON.stringify(args, null, 2));
-  const result = await context.categorizationEngine.categorizeEmails({
-    forceRefresh: args.force_refresh || false,
-    year: args.year
-  });
+  try {
+    // Use JobStatusStore singleton to ensure consistent database access
+    const jobStatusStore = JobStatusStore.getInstance();
+    
+    // Validate singleton integrity before proceeding
+    JobStatusStore.validateSingletonIntegrity();
+    
+    const jobType = 'categorize_emails';
+    const jobId = await jobStatusStore.createJob(
+        jobType, // job_type
+        {
+            forceRefresh: args.force_refresh || false,
+            year: args.year
+        }
+    );
 
-  return {
-    content: [{
-      type: 'text',
-      text: JSON.stringify(result, null, 2)
-    }]
-  };
+    // Enqueue the job for a worker to pick up
+    await context.jobQueue.addJob(jobId);
+
+    // 3. Immediate Response
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ jobId }, null, 2)
+      }]
+    };
+} catch (error) {
+    console.error('Failed to submit categorize_emails job:', error);
+    // Handle error appropriately, perhaps return a JobFailed status or throw a server error
+    throw new Error('Could not initiate email categorization job.');
+}
+
+  
 }
 
 async function handleGetEmailStats(args: any, context: ToolContext) {
@@ -337,6 +368,80 @@ async function handleListSavedSearches(args: any, context: ToolContext) {
     content: [{
       type: 'text',
       text: JSON.stringify(searches, null, 2)
+    }]
+  };
+}
+
+async function handleGetJobStatus(args: any, context: ToolContext) {
+  if (!await context.authManager.hasValidAuth()) {
+    throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
+  }
+
+  // Use JobStatusStore singleton to ensure consistent database access
+  const jobStatusStore = JobStatusStore.getInstance();
+  
+  // Validate singleton integrity before proceeding
+  JobStatusStore.validateSingletonIntegrity();
+  
+  const jobId = args.id;
+
+  if (!jobId) {
+    throw new McpError(ErrorCode.InvalidParams, 'jobId is required');
+  }
+
+  const jobStatus = await jobStatusStore.getJobStatus(jobId);
+
+  if (!jobStatus) {
+    throw new McpError(ErrorCode.InvalidRequest, `Job ${jobId} not found`);
+  }
+
+  let emailList = null;
+  if (jobStatus.status === JobStatus.COMPLETED && jobStatus.results?.emailIds) {
+    emailList = await context.databaseManager.getEmailsByIds(jobStatus.results.emailIds);
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify({
+        jobStatus: {
+          id: jobStatus.job_id,
+          type: jobStatus.job_type,
+          status: jobStatus.status,
+          progress: jobStatus.progress,
+          results: jobStatus.results,
+          error: jobStatus.error_details,
+          createdAt: jobStatus.created_at,
+          startedAt: jobStatus.started_at,
+          completedAt: jobStatus.completed_at
+        },
+        emails: emailList
+      }, null, 2)
+    }]
+  };
+}
+
+async function handleGetEmailDetails(args: any, context: ToolContext) {
+  if (!await context.authManager.hasValidAuth()) {
+    throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
+  }
+
+  const emailId = args.id;
+
+  if (!emailId) {
+    throw new McpError(ErrorCode.InvalidParams, 'emailId is required');
+  }
+
+  const email = await context.databaseManager.getEmailIndex(emailId);
+
+  if (!email) {
+    throw new McpError(ErrorCode.InvalidRequest, `Email ${emailId} not found`);
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify(email, null, 2)
     }]
   };
 }

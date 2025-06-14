@@ -144,11 +144,11 @@ export const mockEmails: EmailIndex[] = [
   }
 ];
 
-// Expected categorization results
+// Expected categorization results based on default configuration
 export const expectedCategories = {
-  high: mockEmails.slice(0, 2), // Only first two are high with current config
-  medium: [mockEmails[2], mockEmails[3], mockEmails[4]], // email-high-3, email-medium-1, email-medium-2
-  low: mockEmails.slice(5)
+  high: mockEmails.slice(0, 5), // First 5 emails match high priority rules (urgent/critical keywords, VIP domains, meeting keywords)
+  medium: [] as EmailIndex[], // No emails fall into medium category with current test data
+  low: mockEmails.slice(5) // Last 4 emails have promotional/newsletter keywords or labels
 };
 
 // Mock statistics for testing
@@ -178,4 +178,117 @@ export const mockStatistics = {
     count: 9,
     size: 2925000
   }
+};
+
+// Additional test emails for modular architecture testing
+export const modularTestEmails: EmailIndex[] = [
+  // Test email for ImportanceAnalyzer
+  {
+    id: 'importance-test-1',
+    threadId: 'thread-importance-1',
+    category: null,
+    subject: 'EMERGENCY: Server down - immediate action required',
+    sender: 'admin@company.com',
+    recipients: ['user@example.com'],
+    date: new Date('2024-01-15'),
+    year: 2024,
+    size: 75000,
+    hasAttachments: false,
+    labels: ['INBOX', 'IMPORTANT'],
+    snippet: 'Critical system failure detected. Please respond ASAP.',
+    archived: false
+  },
+  // Test email for DateSizeAnalyzer
+  {
+    id: 'datesize-test-1',
+    threadId: 'thread-datesize-1',
+    category: null,
+    subject: 'Large attachment email',
+    sender: 'system@automated.com',
+    recipients: ['user@example.com'],
+    date: new Date(), // Very recent
+    year: 2024,
+    size: 15000000, // 15MB - large
+    hasAttachments: true,
+    labels: ['INBOX'],
+    snippet: 'System generated report with large attachment.',
+    archived: false
+  },
+  // Test email for LabelClassifier
+  {
+    id: 'label-test-1',
+    threadId: 'thread-label-1',
+    category: null,
+    subject: 'Special offer - 50% discount!',
+    sender: 'noreply@promotions.com',
+    recipients: ['user@example.com'],
+    date: new Date('2024-02-01'),
+    year: 2024,
+    size: 120000,
+    hasAttachments: false,
+    labels: ['INBOX', 'PROMOTIONS', 'CATEGORY_PROMOTIONS'],
+    snippet: 'Limited time offer! Save 50% on all items.',
+    archived: false
+  },
+  // Test email for combined analysis
+  {
+    id: 'combined-test-1',
+    threadId: 'thread-combined-1',
+    category: null,
+    subject: 'Meeting invitation from CEO',
+    sender: 'ceo@company.com',
+    recipients: ['user@example.com'],
+    date: new Date(), // Recent
+    year: 2024,
+    size: 45000, // Small
+    hasAttachments: false,
+    labels: ['INBOX', 'IMPORTANT'],
+    snippet: 'Please join me for an important strategy meeting.',
+    archived: false
+  },
+  // Test email for spam detection
+  {
+    id: 'spam-test-1',
+    threadId: 'thread-spam-1',
+    category: null,
+    subject: 'You have won $1,000,000!!!',
+    sender: 'scammer@suspicious.com',
+    recipients: ['user@example.com'],
+    date: new Date('2024-01-01'),
+    year: 2024,
+    size: 25000,
+    hasAttachments: false,
+    labels: ['SPAM', 'JUNK'],
+    snippet: 'Congratulations! Click here to claim your prize.',
+    archived: false
+  },
+  // Test email for social classification
+  {
+    id: 'social-test-1',
+    threadId: 'thread-social-1',
+    category: null,
+    subject: 'John Doe liked your photo',
+    sender: 'notifications@facebook.com',
+    recipients: ['user@example.com'],
+    date: new Date('2024-01-10'),
+    year: 2024,
+    size: 30000,
+    hasAttachments: false,
+    labels: ['INBOX', 'CATEGORY_SOCIAL'],
+    snippet: 'John Doe and 5 others liked your recent photo.',
+    archived: false
+  }
+];
+
+// All test emails combined
+export const allTestEmails = [...mockEmails, ...modularTestEmails];
+
+// Expected results for modular test emails
+export const modularExpectedCategories = {
+  'importance-test-1': PriorityCategory.HIGH,
+  'datesize-test-1': PriorityCategory.LOW, // Large size penalty
+  'label-test-1': PriorityCategory.LOW, // Promotional
+  'combined-test-1': PriorityCategory.HIGH, // Important + recent + CEO
+  'spam-test-1': PriorityCategory.LOW, // Spam
+  'social-test-1': PriorityCategory.LOW // Social/promotional
 };

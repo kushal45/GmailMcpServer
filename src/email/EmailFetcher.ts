@@ -10,7 +10,7 @@ export class EmailFetcher {
   private cacheManager: CacheManager;
   
   // Cache expiration time in seconds
-  private readonly CACHE_TTL = 3600; // 1 hour
+  private readonly CACHE_TTL = 5; // 1 hour
   
   // Maximum number of emails to fetch in one batch
   private readonly BATCH_SIZE = 50;

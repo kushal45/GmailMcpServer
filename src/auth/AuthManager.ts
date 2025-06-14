@@ -122,7 +122,7 @@ export class AuthManager {
       await this.saveToken(credentials);
       logger.info('Token refreshed successfully');
     } catch (error) {
-      logger.error('Error refreshing token:', error);
+      logger.error('Error refreshing token:', error, new Error().stack);
       throw error;
     }
   }

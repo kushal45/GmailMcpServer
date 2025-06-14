@@ -1,3 +1,4 @@
+
 import { logger } from '../utils/logger.js';
 
 interface CacheEntry<T> {
@@ -15,6 +16,8 @@ export class CacheManager {
     this.defaultTTL = defaultTTL;
   }
 
+
+
   /**
    * Generate cache key for email list
    */
@@ -22,8 +25,9 @@ export class CacheManager {
     return `email-list:${JSON.stringify(options)}`;
   }
 
-  static initialize(){
-     
+  static async initialize(){
+    // using in-memory cache for now
+    return new CacheManager();
   }
 
   /**

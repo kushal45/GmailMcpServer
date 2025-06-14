@@ -29,7 +29,14 @@ describe('DatabaseManager', () => {
           callback = params;
           params = [];
         }
-        if (callback) callback(null);
+        if (callback) {
+          // Simulate SQLite statement context with changes and lastID
+          const mockContext = {
+            changes: 1, // Mock that 1 row was affected
+            lastID: Math.floor(Math.random() * 1000) + 1 // Mock a random ID
+          };
+          callback.call(mockContext, null);
+        }
       }),
       get: jest.fn((sql: string, params: any, callback: any) => {
         callback(null, null);
@@ -133,7 +140,7 @@ describe('DatabaseManager', () => {
         await dbManager.bulkUpsertEmailIndex(emails);
 
         expect(mockDb.serialize).toHaveBeenCalled();
-        expect(mockDb.run).toHaveBeenCalledWith('BEGIN TRANSACTION');
+        expect(mockDb.run).toHaveBeenCalledWith('BEGIN TRANSACTION', expect.any(Function));
         expect(mockDb.run).toHaveBeenCalledWith('COMMIT', expect.any(Function));
       });
 

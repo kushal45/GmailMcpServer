@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant Client as MCP Client
+    participant Server as Gmail MCP Server
+    participant JobQueue as Job Queue
+    participant LocalCacheDB as LocalCacheDB (SQLite)
+    participant JobStatusStore as Job Status Store
+    participant CategorizationWorker as Categorization Worker
+
+    Client->>Server: Call tool categorize_emails(params)
+    Server->>JobStatusStore: createJob(job_type, request_params)
+    JobStatusStore->>LocalCacheDB: INSERT INTO job_statuses (PENDING)
+    LocalCacheDB-->>JobStatusStore: job_id
+    JobStatusStore-->>Server: job_id (J123)
+    Server->>JobQueue: Add job_id (J123) to queue
+    JobQueue-->>Server: Job added acknowledgment
+    Server-->>Client: Job Accepted (Job ID: J123)
+
+    loop Client Polling for Status
+        Client->>Server: Call tool get_job_status(J123)
+        Server->>JobStatusStore: getJobStatus(J123)
+        JobStatusStore->>LocalCacheDB: SELECT * FROM job_statuses WHERE job_id='J123'
+        LocalCacheDB-->>JobStatusStore: Job Record (status, progress, results, error_details)
+        
+        alt Job status is COMPLETED or FAILED
+            JobStatusStore-->>Server: Final Job Status and Results or Errors
+            Server-->>Client: Final Job Status and Results or Errors
+        else Job status is PENDING or IN_PROGRESS
+            JobStatusStore-->>Server: Current Job Status and Progress
+            Server-->>Client: Current Job Status and Progress
+        end
+    end
+
+    CategorizationWorker->>JobQueue: Retrieve job_id (J123)
+    JobQueue-->>CategorizationWorker: job_id (J123)
+    CategorizationWorker->>JobStatusStore: updateJobStatus(J123, IN_PROGRESS, started_at)
+    JobStatusStore->>LocalCacheDB: UPDATE job_statuses SET status='IN_PROGRESS', started_at=...
+    LocalCacheDB-->>JobStatusStore: Update Acknowledged
+    CategorizationWorker->>CategorizationWorker: Perform Categorization Logic (long-running task)
+    
+    alt Categorization completes successfully
+        CategorizationWorker->>JobStatusStore: updateJobStatus(J123, COMPLETED, completed_at, results)
+        JobStatusStore->>LocalCacheDB: UPDATE job_statuses SET status='COMPLETED', completed_at=..., results=...
+        LocalCacheDB-->>JobStatusStore: Update Acknowledged
+    else Categorization fails
+        CategorizationWorker->>JobStatusStore: updateJobStatus(J123, FAILED, completed_at, error_details)
+        JobStatusStore->>LocalCacheDB: UPDATE job_statuses SET status='FAILED', completed_at=..., error_details=...
+        LocalCacheDB-->>JobStatusStore: Update Acknowledged
+    end
