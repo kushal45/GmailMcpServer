@@ -31,7 +31,6 @@ logs/
 Thumbs.db
 
 # IDE files
-.vscode/
 .idea/
 *.swp
 *.swo

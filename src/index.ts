@@ -2,7 +2,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import dotenv from "dotenv";
-import { GmailMcpServer } from "./server.js";
+import {  GmailMcpServer } from "./server.js";
 import path from "path";
 import { fileURLToPath } from "url";
 

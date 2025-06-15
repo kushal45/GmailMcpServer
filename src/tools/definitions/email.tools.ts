@@ -9,7 +9,7 @@ import { toolRegistry } from '../ToolRegistry.js';
 
 export function registerEmailTools() {
   // Initialize required services
-  const dbManager = new DatabaseManager();
+  const dbManager = DatabaseManager.getInstance();
   const authManager = new AuthManager();
   const cacheManager = new CacheManager();
   
@@ -99,8 +99,46 @@ export function registerEmailTools() {
       required: ['id']
     }
   };
+
+  // categorize email tool
+  const categorizeEmailTool: Tool = {
+    name: 'categorize_emails',
+    description: 'Categorize an email into high, medium, or low priority',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        year:{
+          type: 'number',
+          description: 'Year of the email'
+        },
+        force_refresh:{
+          type: 'boolean',
+          description: 'Force refresh of email data'
+        }
+      },
+      required: ["year"]
+    }
+  };
+
+  // get job status tool from job store 
+  const getJobStatusTool: Tool = {
+    name: 'get_job_status',
+    description: 'Get the status of a categorization job',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Job ID to retrieve'
+        }
+      },
+      required: ['id']
+    }
+  };
   
   // Register tools with the registry
+  toolRegistry.registerTool(categorizeEmailTool, 'email_management');
+  toolRegistry.registerTool(getJobStatusTool,'email_management');
   toolRegistry.registerTool(listEmailsTool, 'email_management');
   toolRegistry.registerTool(getEmailDetailsTool, 'email_management');
   

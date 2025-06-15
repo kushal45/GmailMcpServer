@@ -1,0 +1,44 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "run Jest Test file",
+      "type": "node",
+      "request": "launch",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/node_modules/jest/bin/jest.js",
+      "args": ["--runInBand", "--testPathPattern", "${relativeFile}"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "NODE_ENV": "test",
+        "NODE_OPTIONS": "--experimental-vm-modules"
+      }
+    },
+    {
+      "name": "run test integration script",
+      "type": "node",
+      "request": "launch",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/scripts/test-delete-integration.js",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "NODE_ENV": "test"
+      }
+    },
+    {
+            "type": "node",
+            "request": "attach",
+            "name": "Attach to MCP Server",
+            "processId": "${command:PickProcess}",
+            "restart": true, // Optional: Restart debugging if the process dies
+            "skipFiles": [
+                "<node_internals>/**"
+            ]
+        }
+  ]
+}

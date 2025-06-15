@@ -24,7 +24,7 @@ describe('EmailFetcher Integration Tests', () => {
     process.env.STORAGE_PATH = testDir;
     
     // Initialize real database manager
-    dbManager = new DatabaseManager();
+    dbManager = DatabaseManager.getInstance();
     await dbManager.initialize();
     
     // Mock auth manager and Gmail client
