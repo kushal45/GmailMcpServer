@@ -20,6 +20,7 @@ import { JobQueue } from "./database/JobQueue.js";
 import { CategorizationEngine } from "./categorization/CategorizationEngine.js";
 import { CategorizationWorker } from "./categorization/CategorizationWorker.js";
 import { JobStatusStore } from "./database/JobStatusStore.js";
+import { CleanupAutomationEngine } from "./cleanup/CleanupAutomationEngine.js";
 
 export class GmailMcpServer {
   private server: Server;
@@ -34,6 +35,7 @@ export class GmailMcpServer {
   private categorizationEngine: CategorizationEngine;
   private jobStatusStore: JobStatusStore;
   private categorizationWorker: CategorizationWorker | null = null;
+  private cleanupAutomationEngine: CleanupAutomationEngine;
   constructor() {
     this.server = new Server(
       {
@@ -78,6 +80,13 @@ export class GmailMcpServer {
       this.cacheManager
     );
 
+    // Initialize cleanup automation engine (will be started in initialize())
+    this.cleanupAutomationEngine = CleanupAutomationEngine.getInstance(
+      this.databaseManager,
+      this.jobQueue,
+      this.deleteManager
+    );
+
     this.setupHandlers();
     this.setupErrorHandling();
   }
@@ -112,6 +121,7 @@ export class GmailMcpServer {
             cacheManager: this.cacheManager,
             jobQueue: this.jobQueue,
             categorizationEngine: this.categorizationEngine,
+            cleanupAutomationEngine: this.cleanupAutomationEngine,
           }
         );
         return result;
@@ -187,6 +197,15 @@ export class GmailMcpServer {
         );
         // Continue without auth - user will need to authenticate
       }
+
+      // Initialize cleanup automation engine
+      try {
+        await this.cleanupAutomationEngine.initialize();
+        logger.debug("Cleanup automation engine initialized");
+      } catch (error) {
+        logger.warn("Cleanup automation engine initialization failed:", error);
+        // Continue without cleanup automation - it's optional
+      }
     } catch (error) {
       logger.error("Failed to initialize server:", error);
       throw error;
@@ -199,6 +218,14 @@ export class GmailMcpServer {
       if (this.categorizationWorker) {
         this.categorizationWorker.stop();
         logger.debug("Categorization worker stopped");
+      }
+
+      // Shutdown cleanup automation engine
+      try {
+        await this.cleanupAutomationEngine.shutdown();
+        logger.debug("Cleanup automation engine shutdown");
+      } catch (error) {
+        logger.error("Error shutting down cleanup automation engine:", error);
       }
 
       await this.databaseManager.close();

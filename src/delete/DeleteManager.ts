@@ -2,6 +2,7 @@ import { AuthManager } from '../auth/AuthManager.js';
 import { DatabaseManager } from '../database/DatabaseManager.js';
 import { EmailIndex, DeleteOptions } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { CleanupPolicy } from '../types/index.js';
 
 export class DeleteManager {
   private authManager: AuthManager;
@@ -137,7 +138,7 @@ export class DeleteManager {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       } catch (error) {
-        const errorMsg = `Failed to delete batch ${Math.floor(i / batchSize) + 1}: ${error}`;
+        const errorMsg = `Batch ${Math.floor(i / batchSize) + 1} failed: ${error}`;
         logger.error(errorMsg);
         errors.push(errorMsg);
         
@@ -245,6 +246,260 @@ export class DeleteManager {
       return { deleted, errors };
     } catch (error) {
       logger.error('Error emptying trash:', error);
+      throw error;
+    }
+  
+  }
+
+  /**
+   * Batch delete emails with enhanced safety checks for cleanup operations
+   */
+  async batchDeleteForCleanup(
+    emails: EmailIndex[],
+    policy?: CleanupPolicy,
+    options: {
+      dry_run?: boolean;
+      batch_size?: number;
+      delay_between_batches_ms?: number;
+      max_failures?: number;
+    } = {}
+  ): Promise<{
+    deleted: number;
+    archived: number;
+    failed: number;
+    errors: string[];
+    storage_freed: number;
+  }> {
+    const {
+      dry_run = false,
+      batch_size = 50,
+      delay_between_batches_ms = 100,
+      max_failures = 10
+    } = options;
+
+    logger.info('Starting batch cleanup deletion', {
+      total_emails: emails.length,
+      policy_id: policy?.id,
+      dry_run,
+      batch_size
+    });
+
+    let totalDeleted = 0;
+    let totalArchived = 0;
+    let totalFailed = 0;
+    let totalStorageFreed = 0;
+    const allErrors: string[] = [];
+
+    // Process emails in batches
+    for (let i = 0; i < emails.length; i += batch_size) {
+      const batch = emails.slice(i, i + batch_size);
+      const batchNumber = Math.floor(i / batch_size) + 1;
+      const totalBatches = Math.ceil(emails.length / batch_size);
+
+      try {
+        logger.debug(`Processing cleanup batch ${batchNumber}/${totalBatches}`, {
+          batch_size: batch.length,
+          emails_processed: i + batch.length,
+          total_emails: emails.length
+        });
+
+        if (dry_run) {
+          // Dry run - just simulate
+          totalDeleted += batch.length;
+          totalStorageFreed += batch.reduce((sum, email) => sum + (email.size || 0), 0);
+        } else {
+          // Apply safety checks
+          const safeEmails = batch.filter(email => this.isEmailSafeToDelete(email, policy));
+          
+          if (safeEmails.length !== batch.length) {
+            const skipped = batch.length - safeEmails.length;
+            logger.warn(`Skipped ${skipped} emails in batch ${batchNumber} due to safety checks`);
+          }
+
+
+          if (safeEmails.length > 0) {
+            // Determine action based on policy
+            const action = policy?.action?.type || 'delete';
+            
+            if (action === 'delete') {
+              const result = await this.performDeletion(safeEmails);
+              totalDeleted += result.deleted;
+              totalFailed += safeEmails.length - result.deleted;
+              allErrors.push(...result.errors);
+            } else if (action === 'archive') {
+              // Archive instead of delete
+              await this.archiveEmails(safeEmails);
+              totalArchived += safeEmails.length;
+            }
+
+            totalStorageFreed += safeEmails.reduce((sum, email) => sum + (email.size || 0), 0);
+          }
+        }
+
+        // Check failure threshold
+        if (totalFailed >= max_failures) {
+          const errorMsg = `Maximum failures (${max_failures}) reached, stopping batch processing`;
+          allErrors.push(errorMsg);
+          logger.error(errorMsg);
+          break;
+        }
+
+        // Delay between batches to avoid overwhelming the system
+        if (i + batch_size < emails.length && delay_between_batches_ms > 0) {
+          await new Promise(resolve => setTimeout(resolve, delay_between_batches_ms));
+        }
+
+      } catch (error) {
+        const errorMsg = `Batch ${batchNumber} failed: ${error}`;
+        allErrors.push(errorMsg);
+        totalFailed += batch.length;
+        logger.error(errorMsg);
+
+        if (totalFailed >= max_failures) {
+          break;
+        }
+      }
+    }
+
+    const result = {
+      deleted: totalDeleted,
+      archived: totalArchived,
+      failed: totalFailed,
+      errors: allErrors,
+      storage_freed: totalStorageFreed
+    };
+
+    logger.info('Batch cleanup deletion completed', result);
+    return result;
+  }
+
+  /**
+   * Check if an email is safe to delete based on cleanup policy and general safety rules
+   */
+  private isEmailSafeToDelete(email: EmailIndex, policy?: CleanupPolicy): boolean {
+    // Never delete high importance emails unless explicitly allowed
+    if (email.category === 'high' || email.importanceLevel === 'high') {
+      if (policy?.safety?.preserve_important !== false) {
+        return false;
+      }
+    }
+
+    // Don't delete very recent emails (less than 7 days)
+    if (email.date) {
+      const daysSinceReceived = (Date.now() - email.date.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceReceived < 7) {
+        return false;
+      }
+    }
+
+    // Don't delete emails with very high importance scores
+    if (email.importanceScore && email.importanceScore > 8) {
+      return false;
+    }
+
+    // Additional policy-specific safety checks
+    if (policy) {
+      // Check if email is too recent for policy
+      if (policy.criteria.age_days_min && email.date) {
+        const daysSinceReceived = (Date.now() - email.date.getTime()) / (1000 * 60 * 60 * 24);
+        if (daysSinceReceived < policy.criteria.age_days_min) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Get the reason why an email was filtered (for debugging)
+   */
+  private getFilterReason(email: EmailIndex, policy?: CleanupPolicy): string {
+    // Check high importance
+    if (email.category === 'high' || email.importanceLevel === 'high') {
+      if (policy?.safety?.preserve_important !== false) {
+        return 'high_importance_category';
+      }
+    }
+
+    // Check recent emails (< 7 days)
+    if (email.date) {
+      const daysSinceReceived = (Date.now() - email.date.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceReceived < 7) {
+        return 'too_recent_7_days';
+      }
+    }
+
+    // Check high importance score (> 8)
+    if (email.importanceScore && email.importanceScore > 8) {
+      return 'high_importance_score';
+    }
+
+    // Check policy age criteria
+    if (policy && policy.criteria.age_days_min && email.date) {
+      const daysSinceReceived = (Date.now() - email.date.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceReceived < policy.criteria.age_days_min) {
+        return 'policy_age_minimum';
+      }
+    }
+
+    return 'unknown';
+  }
+
+  /**
+   * Archive emails instead of deleting them
+   */
+  private async archiveEmails(emails: EmailIndex[]): Promise<void> {
+    const emailIds = emails.map(email => email.id);
+    await this.databaseManager.markEmailsAsDeleted(emailIds);
+  }
+
+  /**
+   * Get cleanup deletion statistics
+   */
+  async getCleanupDeletionStats(): Promise<{
+    deletable_by_category: Record<string, number>;
+    deletable_by_age: Record<string, number>;
+    total_deletable: number;
+    total_storage_recoverable: number;
+  }> {
+    try {
+      // Get all non-archived emails
+      const allEmails = await this.databaseManager.searchEmails({ archived: false });
+      
+      const stats = {
+        deletable_by_category: { high: 0, medium: 0, low: 0 },
+        deletable_by_age: { recent: 0, moderate: 0, old: 0 },
+        total_deletable: 0,
+        total_storage_recoverable: 0
+      };
+
+      for (const email of allEmails) {
+        if (this.isEmailSafeToDelete(email)) {
+          stats.total_deletable++;
+          stats.total_storage_recoverable += email.size || 0;
+          
+          // Category stats
+          const category = email.category || 'medium';
+          stats.deletable_by_category[category]++;
+          
+          // Age stats
+          if (email.date) {
+            const daysSince = (Date.now() - email.date.getTime()) / (1000 * 60 * 60 * 24);
+            if (daysSince < 30) {
+              stats.deletable_by_age.recent++;
+            } else if (daysSince < 365) {
+              stats.deletable_by_age.moderate++;
+            } else {
+              stats.deletable_by_age.old++;
+            }
+          }
+        }
+      }
+
+      return stats;
+    } catch (error) {
+      logger.error('Failed to get cleanup deletion stats:', error);
       throw error;
     }
   }

@@ -1,9 +1,8 @@
-
 export enum JobStatus {
-  PENDING = 'PENDING',
-  IN_PROGRESS = 'IN_PROGRESS',
-  COMPLETED = 'COMPLETED',
-  FAILED = 'FAILED'
+  PENDING = "PENDING",
+  IN_PROGRESS = "IN_PROGRESS",
+  COMPLETED = "COMPLETED",
+  FAILED = "FAILED",
 }
 
 export interface Job {

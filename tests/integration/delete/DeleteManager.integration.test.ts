@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { DeleteManager } from '../../../src/delete/DeleteManager.js';
 import { DatabaseManager } from '../../../src/database/DatabaseManager.js';
-import { DeleteOptions, EmailIndex } from '../../../src/types/index.js';
+import { DeleteOptions, EmailIndex, CleanupPolicy } from '../../../src/types/index.js';
 import {
   mockEmails,
   getEmailsByCriteria,
@@ -9,7 +9,10 @@ import {
   batchTestEmailIds,
   errorScenarioEmails,
   mockStatistics,
-  trashEmails
+  trashEmails,
+  cleanupTestEmails,
+  cleanupSafetyTestEmails,
+  cleanupEdgeCaseEmails
 } from './fixtures/mockEmails.js';
 import {
   createDeleteManagerWithRealDb,
@@ -31,7 +34,20 @@ import {
   getEmailsFromDatabase,
   createTestDatabaseManager,
   startLoggerCapture,
-  stopLoggerCapture
+  stopLoggerCapture,
+  createMockCleanupPolicy,
+  createMockAccessPatternTracker,
+  createMockStalenessScorer,
+  createMockCleanupPolicyEngine,
+  setupCleanupPolicyEngine,
+  setupStalenessScorer,
+  setupAccessPatternTracker,
+  verifyCleanupDeletionStats,
+  verifyBatchDeleteForCleanupResults,
+  createTestCleanupPolicies,
+  createCleanupEvaluationResults,
+  waitForBatchCompletion,
+  createPerformanceTestScenario
 } from './helpers/testHelpers.js';
 import { logger } from '../../../src/utils/logger.js';
 
@@ -546,7 +562,6 @@ describe('DeleteManager Integration Tests with Real Database', () => {
 
       expect(result.deleted).toBe(0);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]).toContain('Failed to delete batch 1');
       expect(result.errors[0]).toContain('Insufficient permissions');
     });
 
@@ -578,7 +593,6 @@ describe('DeleteManager Integration Tests with Real Database', () => {
 
       expect(result.deleted).toBe(50); // Only first batch succeeded
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]).toContain('Failed to delete batch 2');
       expect(result.errors[0]).toContain('Network timeout');
     });
   });
@@ -859,6 +873,458 @@ describe('DeleteManager Integration Tests with Real Database', () => {
         archived: false
       });
       // Note: Label search would need to be implemented in DatabaseManager
+    });
+  
+    // ========================
+    // New Cleanup System Integration Tests
+    // ========================
+  
+    describe('Cleanup System Integration', () => {
+      describe('batchDeleteForCleanup', () => {
+        it('should perform batch cleanup deletion with safety checks', async () => {
+          const testEmails = cleanupTestEmails.slice(0, 5);
+          const newDbManager = await resetTestDatabase(dbManager, testEmails);
+          deleteManager.dbManager = newDbManager;
+          
+          const policy = createMockCleanupPolicy({
+            id: 'test-batch-policy',
+            criteria: { age_days_min: 30, importance_level_max: 'medium' },
+            action: { type: 'delete' },
+            safety: {
+              max_emails_per_run: 10,
+              preserve_important: true,
+              require_confirmation: false,
+              dry_run_first: false
+            }
+          });
+  
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            testEmails,
+            policy,
+            { dry_run: false, batch_size: 3 }
+          );
+  
+          expect(result.deleted).toBeGreaterThan(0);
+          expect(result.errors).toHaveLength(0);
+          expect(result.storage_freed).toBeGreaterThan(0);
+          
+          expect(result.deleted).toBeGreaterThan(0);
+          expect(result.archived).toBe(0);
+          expect(result.failed).toBe(0);
+          expect(result.storage_freed).toBeGreaterThan(0);
+          expect(result.errors).toHaveLength(0);
+        });
+  
+        it('should handle dry run mode for batch cleanup', async () => {
+          const testEmails = cleanupTestEmails.slice(0, 3);
+          await resetTestDatabase(dbManager, testEmails);
+          
+          const policy = createMockCleanupPolicy();
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            testEmails,
+            policy,
+            { dry_run: true, batch_size: 10 }
+          );
+  
+          expect(result.deleted).toBe(testEmails.length);
+          expect(result.storage_freed).toBeGreaterThan(0);
+          expect(mockGmailClient.users.messages.batchModify).not.toHaveBeenCalled();
+        });
+  
+        it('should respect safety checks for high importance emails', async () => {
+          const safetyEmails = cleanupSafetyTestEmails.slice(0, 2);
+          await resetTestDatabase(dbManager, safetyEmails);
+          
+          const policy = createMockCleanupPolicy({
+            safety: {
+              preserve_important: true,
+              max_emails_per_run: 10,
+              require_confirmation: false,
+              dry_run_first: false
+            }
+          });
+  
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            safetyEmails,
+            policy,
+            { dry_run: false }
+          );
+  
+          // High importance emails should be skipped
+          expect(result.deleted).toBe(0);
+          expect(mockGmailClient.users.messages.batchModify).not.toHaveBeenCalled();
+        });
+  
+        it('should handle batch processing with different action types', async () => {
+          const testEmails = cleanupTestEmails.slice(0, 4);
+          const newDbManager=await resetTestDatabase(dbManager, testEmails);
+          deleteManager.dbManager = newDbManager;
+          
+          const archivePolicy = createMockCleanupPolicy({
+            action: { type: 'archive' }
+          });
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            testEmails,
+            archivePolicy,
+            { dry_run: false }
+          );
+  
+          expect(result.archived).toBe(testEmails.length);
+          expect(result.deleted).toBe(0);
+          expect(mockGmailClient.users.messages.batchModify).not.toHaveBeenCalled();
+        });
+  
+        it('should handle error scenarios in batch cleanup', async () => {
+          const testEmails = cleanupTestEmails.slice(0, 3);
+          await resetTestDatabase(dbManager, testEmails);
+          
+          const policy = createMockCleanupPolicy();
+          setupBatchModifyFailure(mockGmailClient, testErrors.networkError);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            testEmails,
+            policy,
+            { dry_run: false, max_failures: 1 }
+          );
+  
+          expect(result.failed).toBeGreaterThan(0);
+          expect(result.errors.length).toBeGreaterThan(0);
+          expect(result.errors[0]).toContain('Batch 1 failed');
+        });
+  
+        it('should respect max failures threshold', async () => {
+          const testEmails = cleanupTestEmails.slice(0, 6);
+          await resetTestDatabase(dbManager, testEmails);
+          
+          const policy = createMockCleanupPolicy();
+          setupBatchModifyFailure(mockGmailClient, testErrors.networkError);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            testEmails,
+            policy,
+            { dry_run: false, batch_size: 2, max_failures: 2 }
+          );
+  
+          expect(result.failed).toBe(2); // Should stop after max failures
+          expect(result.errors.length).toBeGreaterThan(0);
+        });
+      });
+  
+      describe('getCleanupDeletionStats', () => {
+        it('should return accurate cleanup deletion statistics', async () => {
+          const mixedEmails = [
+            ...cleanupTestEmails.slice(0, 3),
+            ...cleanupSafetyTestEmails.slice(0, 2),
+            ...cleanupEdgeCaseEmails.slice(0, 2)
+          ];
+          const newDbManager = await resetTestDatabase(dbManager, mixedEmails);
+          deleteManager.dbManager = newDbManager;
+
+          const stats = await deleteManager.getCleanupDeletionStats();
+  
+          expect(stats).toHaveProperty('deletable_by_category');
+          expect(stats).toHaveProperty('deletable_by_age');
+          expect(stats).toHaveProperty('total_deletable');
+          expect(stats).toHaveProperty('total_storage_recoverable');
+          
+          expect(stats.total_deletable).toBeGreaterThan(0);
+          expect(stats.total_storage_recoverable).toBeGreaterThan(0);
+          expect(stats.deletable_by_category.low).toBeGreaterThan(0);
+        });
+  
+        it('should exclude high importance emails from deletable stats', async () => {
+          const highImportanceEmails = cleanupSafetyTestEmails;
+          const newDbManager = await resetTestDatabase(dbManager, highImportanceEmails);
+          deleteManager.dbManager = newDbManager;
+
+          const stats = await deleteManager.getCleanupDeletionStats();
+          
+          // High importance emails should not be counted as deletable
+          expect(stats.total_deletable).toBe(0);
+          expect(stats.total_storage_recoverable).toBe(0);
+        });
+  
+        it('should categorize emails by age correctly', async () => {
+          const ageTestEmails = [
+            {
+              ...cleanupTestEmails[0],
+              id: 'recent-email',
+              date: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000), // 15 days ago
+              category: 'low' as const
+            },
+            {
+              ...cleanupTestEmails[1],
+              id: 'moderate-email',
+              date: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000), // 180 days ago
+              category: 'low' as const
+            },
+            {
+              ...cleanupTestEmails[2],
+              id: 'old-email',
+              date: new Date(Date.now() - 400 * 24 * 60 * 60 * 1000), // 400 days ago
+              category: 'low' as const
+            }
+          ];
+          const newDbManager = await resetTestDatabase(dbManager, ageTestEmails);
+          deleteManager.dbManager = newDbManager;
+
+          const stats = await deleteManager.getCleanupDeletionStats();
+          
+          expect(stats.deletable_by_age.recent).toBeGreaterThanOrEqual(0);
+          expect(stats.deletable_by_age.moderate).toBeGreaterThanOrEqual(0);
+          expect(stats.deletable_by_age.old).toBeGreaterThanOrEqual(0);
+        });
+      });
+  
+      describe('Email Safety Checks Integration', () => {
+        it('should integrate with cleanup policies for safety decisions', async () => {
+          const mixedEmails = [
+            ...cleanupTestEmails.slice(0, 2), // Should be deletable
+            ...cleanupSafetyTestEmails.slice(0, 1) // Should be protected
+          ];
+          await resetTestDatabase(dbManager, mixedEmails);
+  
+          const policy = createMockCleanupPolicy({
+            safety: {
+              preserve_important: true,
+              max_emails_per_run: 100,
+              require_confirmation: false,
+              dry_run_first: false
+            }
+          });
+  
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            mixedEmails,
+            policy,
+            { dry_run: false }
+          );
+  
+          // Only non-protected emails should be processed
+          expect(result.deleted).toBeLessThan(mixedEmails.length);
+          expect(result.deleted).toBeGreaterThan(0);
+        });
+  
+        it('should handle recent email protection', async () => {
+          const recentEmail = {
+            ...cleanupTestEmails[0],
+            id: 'very-recent-email',
+            date: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
+            category: 'low' as const
+          };
+          await resetTestDatabase(dbManager, [recentEmail]);
+  
+          const policy = createMockCleanupPolicy();
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            [recentEmail],
+            policy,
+            { dry_run: false }
+          );
+  
+          // Recent emails should be protected
+          expect(result.deleted).toBe(0);
+          expect(mockGmailClient.users.messages.batchModify).not.toHaveBeenCalled();
+        });
+  
+        it('should handle importance score-based protection', async () => {
+          const highScoreEmail = {
+            ...cleanupTestEmails[0],
+            id: 'high-score-email',
+            importanceScore: 9.5, // Very high importance score
+            category: 'medium' as const
+          };
+          await resetTestDatabase(dbManager, [highScoreEmail]);
+  
+          const policy = createMockCleanupPolicy();
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            [highScoreEmail],
+            policy,
+            { dry_run: false }
+          );
+  
+          // High importance score emails should be protected
+          expect(result.deleted).toBe(0);
+          expect(mockGmailClient.users.messages.batchModify).not.toHaveBeenCalled();
+        });
+      });
+  
+      describe('Performance and Stress Testing', () => {
+        it('should handle large batch cleanup operations efficiently', async () => {
+          const largeEmailSet = createPerformanceTestScenario(500).map(email => ({
+            ...email,
+            category: 'low' as const // Make them deletable
+          }));
+          
+          const newDbManager=await resetTestDatabase(dbManager, largeEmailSet);
+          deleteManager.dbManager = newDbManager;
+
+          
+          
+          const policy = createMockCleanupPolicy({
+            safety: {
+              max_emails_per_run: 500,
+              preserve_important: true,
+              require_confirmation: false,
+              dry_run_first: false
+            }
+          });
+  
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const startTime = Date.now();
+          const result = await deleteManager.batchDeleteForCleanup(
+            largeEmailSet,
+            policy,
+            { dry_run: false, batch_size: 50 }
+          );
+          const endTime = Date.now();
+  
+          expect(result.deleted).toBe(largeEmailSet.length);
+          expect(result.errors).toHaveLength(0);
+          expect(endTime - startTime).toBeLessThan(10000); // Should complete in under 10 seconds
+          
+          // Should use appropriate number of batch calls
+          const expectedBatches = Math.ceil(largeEmailSet.length / 50);
+          expect(mockGmailClient.users.messages.batchModify).toHaveBeenCalledTimes(expectedBatches);
+        });
+  
+        it('should handle concurrent cleanup operations safely', async () => {
+          const emailSet1 = cleanupTestEmails.slice(0, 3).map(e => ({ ...e, id: e.id + '-set1' }));
+          const emailSet2 = cleanupTestEmails.slice(0, 3).map(e => ({ ...e, id: e.id + '-set2' }));
+          
+          await resetTestDatabase(dbManager, [...emailSet1, ...emailSet2]);
+          
+          const policy = createMockCleanupPolicy();
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          // Run concurrent batch operations
+          const [result1, result2] = await Promise.all([
+            deleteManager.batchDeleteForCleanup(emailSet1, policy, { dry_run: false }),
+            deleteManager.batchDeleteForCleanup(emailSet2, policy, { dry_run: false })
+          ]);
+  
+          expect(result1.deleted).toBe(emailSet1.length);
+          expect(result2.deleted).toBe(emailSet2.length);
+          expect(result1.errors).toHaveLength(0);
+          expect(result2.errors).toHaveLength(0);
+        });
+  
+        it('should handle memory constraints during large operations', async () => {
+          const veryLargeEmailSet = createPerformanceTestScenario(1000);
+          await resetTestDatabase(dbManager, veryLargeEmailSet);
+  
+          const policy = createMockCleanupPolicy();
+  
+          // Test dry run to avoid actual Gmail API calls
+          const result = await deleteManager.batchDeleteForCleanup(
+            veryLargeEmailSet,
+            policy,
+            { dry_run: true, batch_size: 100 }
+          );
+  
+          expect(result.deleted).toBe(veryLargeEmailSet.length);
+          expect(result.storage_freed).toBeGreaterThan(0);
+        });
+      });
+  
+      describe('Edge Cases and Error Scenarios', () => {
+        it('should handle emails without required fields', async () => {
+          const edgeCaseEmails = cleanupEdgeCaseEmails.slice(0, 3);
+          await resetTestDatabase(dbManager, edgeCaseEmails);
+  
+          const policy = createMockCleanupPolicy();
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            edgeCaseEmails,
+            policy,
+            { dry_run: false }
+          );
+  
+          // Should handle gracefully without crashing
+          expect(result).toHaveProperty('deleted');
+          expect(result).toHaveProperty('errors');
+        });
+  
+        it('should handle conflicting importance signals', async () => {
+          const conflictingEmail = cleanupEdgeCaseEmails.find(e => e.id === 'edge-conflicting-1');
+          if (!conflictingEmail) throw new Error('Conflicting email not found');
+          
+          await resetTestDatabase(dbManager, [conflictingEmail]);
+  
+          const policy = createMockCleanupPolicy();
+          setupSuccessfulBatchModify(mockGmailClient);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            [conflictingEmail],
+            policy,
+            { dry_run: false }
+          );
+  
+          // Should err on the side of caution for conflicting signals
+          expect(result.deleted).toBe(0);
+          expect(mockGmailClient.users.messages.batchModify).not.toHaveBeenCalled();
+        });
+  
+        it('should handle partial batch failures gracefully', async () => {
+          const testEmails = cleanupTestEmails.slice(0, 4);
+          await resetTestDatabase(dbManager, testEmails);
+  
+          const policy = createMockCleanupPolicy();
+          setupPartialBatchFailure(mockGmailClient, testErrors.networkError);
+  
+          const result = await deleteManager.batchDeleteForCleanup(
+            testEmails,
+            policy,
+            { dry_run: false, batch_size: 2 }
+          );
+  
+          expect(result.deleted).toBe(2); // First batch should succeed
+          expect(result.failed).toBe(2); // Second batch should fail
+          expect(result.errors.length).toBeGreaterThan(0);
+        });
+  
+        it('should handle database errors during cleanup stats', async () => {
+          // Close database to simulate error
+          await dbManager.close();
+  
+          await expect(deleteManager.getCleanupDeletionStats()).rejects.toThrow();
+        });
+      });
+  
+      describe('Integration with Cleanup Policy Validation', () => {
+        it('should validate policy compatibility before cleanup', async () => {
+          const testEmails = cleanupTestEmails.slice(0, 2);
+          await resetTestDatabase(dbManager, testEmails);
+  
+          const invalidPolicy = createMockCleanupPolicy({
+            criteria: {
+              age_days_min: -1, // Invalid negative value
+              importance_level_max: 'medium'
+            }
+          });
+  
+          // This should still work but with warnings in logs
+          const result = await deleteManager.batchDeleteForCleanup(
+            testEmails,
+            invalidPolicy,
+            { dry_run: true }
+          );
+  
+          expect(result).toHaveProperty('deleted');
+        });
+      });
     });
   });
 

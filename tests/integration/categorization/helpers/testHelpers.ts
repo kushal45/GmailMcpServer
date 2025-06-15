@@ -14,6 +14,7 @@ let testDbPath: string;
 let testDbDir: string;
 
 export async function createTestDatabaseManager(): Promise<DatabaseManager> {
+  setTimeout(() => {},10);
   // Create a unique test database in temp directory
   testDbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gmail-test-'));
   testDbPath = path.join(testDbDir, 'test-emails.db');
@@ -22,7 +23,7 @@ export async function createTestDatabaseManager(): Promise<DatabaseManager> {
   process.env.STORAGE_PATH = testDbDir;
   
   const dbManager = DatabaseManager.getInstance();
-  await dbManager.initialize();
+  await dbManager.initialize(testDbPath);
   
   return dbManager;
 }

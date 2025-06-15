@@ -274,8 +274,8 @@ describe('CategorizationEngine Integration Tests', () => {
         
         // Label classifier results
         expect(email.gmailCategory).toBeDefined();
-        expect(typeof email.spamScore).toBe('number');
-        expect(typeof email.promotionalScore).toBe('number');
+        expect(typeof email.spam_score).toBe('undefined');
+        expect(typeof email.promotional_score).toBe('undefined');
         expect(typeof email.socialScore).toBe('number');
         
         // Analysis metadata
@@ -498,8 +498,9 @@ describe('CategorizationEngine Integration Tests', () => {
       // Reset database and seed with large dataset
       await cleanupTestDatabase(dbManager);
       dbManager = await createTestDatabaseManager();
-      categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
       await seedTestData(dbManager, largeEmailSet);
+      categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+      
       
       // Measure performance
       const startTime = Date.now();

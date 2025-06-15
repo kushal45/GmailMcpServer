@@ -184,7 +184,7 @@ export class CategorizationEngine {
         if (email.sizeCategory) {
           sizeDistribution[email.sizeCategory]++;
         }
-        if (email.spamScore && email.spamScore > 0.5) {
+        if (email.spam_score && email.spam_score > 0.5) {
           spamDetectedCount++;
         }
         
@@ -429,7 +429,7 @@ export class CategorizationEngine {
       }
       
       // Reduce to low if promotional or spam
-      if (labelClassification.spamScore > 0.7 || labelClassification.promotionalScore > 0.8) {
+      if (labelClassification.spam_score > 0.7 || labelClassification.promotional_score > 0.8) {
         return PriorityCategory.LOW;
       }
       
@@ -483,12 +483,12 @@ export class CategorizationEngine {
       reasoning.push(`Gmail category: ${labelClassification.category}`);
     }
     
-    if (labelClassification.spamScore > 0.5) {
-      reasoning.push(`Spam indicators detected (score: ${labelClassification.spamScore.toFixed(2)})`);
+    if (labelClassification.spam_score > 0.5) {
+      reasoning.push(`Spam indicators detected (score: ${labelClassification.spam_score.toFixed(2)})`);
     }
     
-    if (labelClassification.promotionalScore > 0.5) {
-      reasoning.push(`Promotional content detected (score: ${labelClassification.promotionalScore.toFixed(2)})`);
+    if (labelClassification.promotional_score > 0.5) {
+      reasoning.push(`Promotional content detected (score: ${labelClassification.promotional_score.toFixed(2)})`);
     }
     
     return reasoning;
@@ -517,8 +517,8 @@ export class CategorizationEngine {
       const labelClassification = combinedResult.labelClassification;
       // Map 'other' category to 'primary' as fallback since EmailIndex doesn't support 'other'
       email.gmailCategory = labelClassification.category === 'other' ? 'primary' : labelClassification.category;
-      email.spamScore = labelClassification.spamScore;
-      email.promotionalScore = labelClassification.promotionalScore;
+      email.spam_score = labelClassification.spam_score;
+      email.promotional_score = labelClassification.promotional_score;
       email.socialScore = labelClassification.socialScore;
       
       // Handle indicators arrays - store as arrays directly
@@ -540,7 +540,7 @@ export class CategorizationEngine {
         ageCategory: email.ageCategory,
         sizeCategory: email.sizeCategory,
         gmailCategory: email.gmailCategory,
-        spamScore: email.spamScore,
+        spam_score: email.spam_score,
         analysisVersion: email.analysisVersion
       });
     } catch (error) {
