@@ -1,14 +1,17 @@
 # Gmail MCP Server
 
-A Model Context Protocol (MCP) server that integrates with Gmail API to provide intelligent email management capabilities including categorization, search, archiving, and deletion features.
+A Model Context Protocol (MCP) server that integrates with Gmail API to provide intelligent email management capabilities including categorization, search, archiving, deletion, and automated cleanup features.
 
 ## Features
 
-- **Email Categorization**: Automatically categorize emails by importance (high/medium/low)
+- **Email Categorization**: Automatically categorize emails by importance (high/medium/low) using advanced analysis
 - **Advanced Search**: Search emails with multiple filters and save frequent searches
 - **Smart Archiving**: Archive emails based on rules with export capabilities
 - **Safe Deletion**: Delete emails with confirmation and dry-run options
+- **Automated Cleanup**: Continuous cleanup automation with configurable policies
+- **Access Pattern Tracking**: Track email access patterns for intelligent cleanup decisions
 - **Statistics**: Get detailed statistics about your email usage
+- **Job Management**: Background job processing for long-running operations
 
 ## Prerequisites
 
@@ -29,6 +32,7 @@ cd gmail-mcp-server
 ```bash
 npm run setup
 ```
+
 This will guide you through:
 - Setting up Google Cloud credentials
 - Creating necessary directories
@@ -93,23 +97,368 @@ For Claude Desktop, add to your MCP settings:
 }
 ```
 
-### Available Tools
+## Available MCP Tools
 
-1. **authenticate** - Initialize Gmail authentication
-2. **list_emails** - List emails with filters
-3. **search_emails** - Advanced email search
-4. **categorize_emails** - Categorize emails by importance
-5. **get_email_stats** - Get email statistics
-6. **archive_emails** - Archive emails
-7. **restore_emails** - Restore archived emails
-8. **create_archive_rule** - Create automatic archive rules
-9. **list_archive_rules** - List archive rules
-10. **export_emails** - Export emails to various formats
-11. **delete_emails** - Delete emails with safety checks
+### Authentication Tools
 
-### Example Workflows
+#### `authenticate`
+Initialize Gmail authentication and establish connection.
 
-#### Initial Setup
+**Purpose**: Authenticate with Gmail API using OAuth2 flow
+**Parameters**: None
+**Returns**: Authentication status and user information
+
+```json
+{
+  "tool": "authenticate"
+}
+```
+
+### Email Management Tools
+
+#### `list_emails`
+List emails with various filtering options.
+
+**Purpose**: Retrieve emails with pagination and filtering
+**Parameters**:
+- `limit` (number): Maximum number of emails to return
+- `year` (number): Filter by specific year
+- `category` (string): Filter by importance category
+- `labels` (array): Filter by Gmail labels
+- `hasAttachments` (boolean): Filter by attachment presence
+
+```json
+{
+  "tool": "list_emails",
+  "arguments": {
+    "limit": 50,
+    "year": 2024,
+    "category": "high"
+  }
+}
+```
+
+#### `get_email_details`
+Get detailed information about a specific email.
+
+**Purpose**: Retrieve full email content and metadata
+**Parameters**:
+- `email_id` (string): Gmail message ID
+
+```json
+{
+  "tool": "get_email_details",
+  "arguments": {
+    "email_id": "message_id_here"
+  }
+}
+```
+
+### Search Tools
+
+#### `search_emails`
+Advanced email search with multiple criteria.
+
+**Purpose**: Search emails using complex filters and queries
+**Parameters**:
+- `query` (string): Text search query
+- `year_range` (object): Date range filter
+- `size_range` (object): Size range filter
+- `labels` (array): Label filters
+- `category` (string): Importance category
+- `hasAttachments` (boolean): Attachment filter
+- `limit` (number): Result limit
+
+```json
+{
+  "tool": "search_emails",
+  "arguments": {
+    "query": "important project",
+    "year_range": { "start": 2023, "end": 2024 },
+    "size_range": { "min": 1048576 },
+    "category": "high",
+    "limit": 100
+  }
+}
+```
+
+### Categorization Tools
+
+#### `categorize_emails`
+Categorize emails by importance using AI analysis.
+
+**Purpose**: Analyze and categorize emails into high/medium/low importance
+**Parameters**:
+- `force_refresh` (boolean): Force re-categorization of existing emails
+- `year` (number): Categorize emails from specific year
+- `limit` (number): Maximum emails to categorize
+
+```json
+{
+  "tool": "categorize_emails",
+  "arguments": {
+    "force_refresh": true,
+    "year": 2024
+  }
+}
+```
+
+#### `get_categorization_status`
+Get status of ongoing categorization jobs.
+
+**Purpose**: Monitor categorization job progress
+**Parameters**: None
+
+```json
+{
+  "tool": "get_categorization_status"
+}
+```
+
+### Statistics Tools
+
+#### `get_email_stats`
+Get comprehensive email statistics.
+
+**Purpose**: Retrieve detailed statistics about email usage
+**Parameters**:
+- `group_by` (string): Grouping method (year, category, label, all)
+- `year` (number): Filter by specific year
+
+```json
+{
+  "tool": "get_email_stats",
+  "arguments": {
+    "group_by": "category"
+  }
+}
+```
+
+### Archive Tools
+
+#### `archive_emails`
+Archive emails based on criteria.
+
+**Purpose**: Archive old or large emails to free up space
+**Parameters**:
+- `year` (number): Archive emails from specific year
+- `category` (string): Archive by importance category
+- `size_threshold` (number): Archive emails larger than threshold
+- `method` (string): Archive method (move, export, delete)
+- `export_format` (string): Export format (mbox, json, csv)
+- `dry_run` (boolean): Preview without actual archiving
+
+```json
+{
+  "tool": "archive_emails",
+  "arguments": {
+    "year": 2022,
+    "size_threshold": 5242880,
+    "method": "export",
+    "export_format": "mbox",
+    "dry_run": false
+  }
+}
+```
+
+#### `restore_emails`
+Restore previously archived emails.
+
+**Purpose**: Restore emails from archive back to Gmail
+**Parameters**:
+- `archive_id` (string): Archive identifier
+- `email_ids` (array): Specific email IDs to restore
+
+```json
+{
+  "tool": "restore_emails",
+  "arguments": {
+    "archive_id": "archive_2022_01"
+  }
+}
+```
+
+#### `create_archive_rule`
+Create automatic archiving rules.
+
+**Purpose**: Set up automated archiving based on criteria
+**Parameters**:
+- `name` (string): Rule name
+- `criteria` (object): Archiving criteria
+- `schedule` (string): Execution schedule
+- `enabled` (boolean): Rule status
+
+```json
+{
+  "tool": "create_archive_rule",
+  "arguments": {
+    "name": "Archive Old Large Emails",
+    "criteria": {
+      "age_days": 365,
+      "size_threshold": 10485760
+    },
+    "schedule": "weekly",
+    "enabled": true
+  }
+}
+```
+
+#### `list_archive_rules`
+List all archive rules.
+
+**Purpose**: View all configured archive rules
+**Parameters**: None
+
+```json
+{
+  "tool": "list_archive_rules"
+}
+```
+
+#### `export_emails`
+Export emails to various formats.
+
+**Purpose**: Export emails for backup or migration
+**Parameters**:
+- `format` (string): Export format (mbox, json, csv, eml)
+- `criteria` (object): Email selection criteria
+- `output_path` (string): Export destination
+
+```json
+{
+  "tool": "export_emails",
+  "arguments": {
+    "format": "mbox",
+    "criteria": {
+      "year": 2023,
+      "category": "low"
+    }
+  }
+}
+```
+
+### Deletion Tools
+
+#### `delete_emails`
+Safely delete emails with confirmation.
+
+**Purpose**: Delete emails with safety checks and confirmation
+**Parameters**:
+- `criteria` (object): Deletion criteria
+- `category` (string): Delete by importance category
+- `dry_run` (boolean): Preview without actual deletion
+- `confirm` (boolean): Confirmation flag
+- `max_count` (number): Maximum emails to delete
+
+```json
+{
+  "tool": "delete_emails",
+  "arguments": {
+    "category": "low",
+    "dry_run": true,
+    "max_count": 100
+  }
+}
+```
+
+### Cleanup Automation Tools
+
+#### `start_cleanup_automation`
+Start automated cleanup processes.
+
+**Purpose**: Begin continuous cleanup automation
+**Parameters**:
+- `policies` (array): Cleanup policies to enable
+- `schedule` (string): Cleanup schedule
+
+```json
+{
+  "tool": "start_cleanup_automation",
+  "arguments": {
+    "policies": ["old_emails", "large_attachments"],
+    "schedule": "daily"
+  }
+}
+```
+
+#### `stop_cleanup_automation`
+Stop automated cleanup processes.
+
+**Purpose**: Halt all cleanup automation
+**Parameters**: None
+
+```json
+{
+  "tool": "stop_cleanup_automation"
+}
+```
+
+#### `get_cleanup_status`
+Get status of cleanup operations.
+
+**Purpose**: Monitor cleanup job progress and results
+**Parameters**: None
+
+```json
+{
+  "tool": "get_cleanup_status"
+}
+```
+
+### Job Management Tools
+
+#### `list_jobs`
+List all background jobs.
+
+**Purpose**: View status of all background processing jobs
+**Parameters**:
+- `status` (string): Filter by job status
+- `type` (string): Filter by job type
+
+```json
+{
+  "tool": "list_jobs",
+  "arguments": {
+    "status": "running"
+  }
+}
+```
+
+#### `get_job_status`
+Get detailed status of a specific job.
+
+**Purpose**: Monitor individual job progress
+**Parameters**:
+- `job_id` (string): Job identifier
+
+```json
+{
+  "tool": "get_job_status",
+  "arguments": {
+    "job_id": "cleanup_continuous_1234567890"
+  }
+}
+```
+
+#### `cancel_job`
+Cancel a running job.
+
+**Purpose**: Stop a background job
+**Parameters**:
+- `job_id` (string): Job identifier
+
+```json
+{
+  "tool": "cancel_job",
+  "arguments": {
+    "job_id": "categorization_job_1234567890"
+  }
+}
+```
+
+## Example Workflows
+
+### Initial Setup
 ```json
 // 1. Authenticate
 {
@@ -133,7 +482,7 @@ For Claude Desktop, add to your MCP settings:
 }
 ```
 
-#### Clean Up Old Emails
+### Clean Up Old Emails
 ```json
 // 1. Search for old large emails
 {
@@ -156,6 +505,23 @@ For Claude Desktop, add to your MCP settings:
 }
 ```
 
+### Automated Cleanup Setup
+```json
+// 1. Start cleanup automation
+{
+  "tool": "start_cleanup_automation",
+  "arguments": {
+    "policies": ["old_emails", "large_attachments"],
+    "schedule": "daily"
+  }
+}
+
+// 2. Monitor cleanup status
+{
+  "tool": "get_cleanup_status"
+}
+```
+
 ## Development
 
 ### Project Structure
@@ -165,6 +531,7 @@ gmail-mcp-server/
 │   ├── auth/           # Authentication management
 │   ├── cache/          # Caching layer
 │   ├── categorization/ # Email categorization engine
+│   ├── cleanup/        # Cleanup automation
 │   ├── database/       # SQLite database management
 │   ├── delete/         # Email deletion logic
 │   ├── email/          # Email fetching and processing
@@ -195,7 +562,6 @@ npm run inspector
 The project includes comprehensive test suites to ensure reliability and correctness of all features.
 
 ### Running Tests
-
 ```bash
 # Run all tests
 npm test
@@ -226,7 +592,6 @@ node scripts/test-delete-integration.js --filter "delete by category"
 For detailed information about delete email testing, see [Delete Email Testing Documentation](docs/DELETE_EMAIL_TESTING.md).
 
 ### Test Structure
-
 ```
 tests/
 ├── unit/               # Unit tests for individual components
@@ -237,7 +602,6 @@ tests/
 ```
 
 ### Writing Tests
-
 - Follow the existing test patterns
 - Use descriptive test names
 - Mock external dependencies
@@ -250,6 +614,7 @@ tests/
 - All bulk operations require confirmation
 - Audit logging for all operations
 - Rate limiting implemented for Gmail API
+- Access pattern tracking for security monitoring
 
 ## Troubleshooting
 

@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { LabelClassifier } from '../../../../src/categorization/analyzers/LabelClassifier.js';
+import { LabelClassifier } from '../../../../src/categorization/analyzers/LabelClassifier';
 import { 
   LabelClassifierConfig, 
   LabelClassification,
   GmailCategory,
   SpamScore
-} from '../../../../src/categorization/interfaces/ILabelClassifier.js';
-import { EmailAnalysisContext } from '../../../../src/categorization/interfaces/IImportanceAnalyzer.js';
+} from '../../../../src/categorization/interfaces/ILabelClassifier';
+import { EmailAnalysisContext } from '../../../../src/categorization/interfaces/IImportanceAnalyzer';
 import { CacheManager } from '../../../../src/cache/CacheManager.js';
 import { EmailIndex } from '../../../../src/types/index.js';
 import { Labels } from '../../../../src/categorization/types.js';

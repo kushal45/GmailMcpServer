@@ -158,7 +158,7 @@ export class DeleteManager {
     
     logger.info('Marking emails as deleted', { count: emailIds.length });
     await this.databaseManager.markEmailsAsDeleted(emailIds);
-    logger.info('Emails marked as deleted', { count: emailIds.length });
+    logger.debug('Emails marked as deleted', { count: emailIds.length });
   }
 
   async getDeleteStatistics(): Promise<any> {
