@@ -651,8 +651,7 @@ export class CleanupAutomationEngine {
             ids: deleteEmails.map(email => email.id),
           },
           dryRun: false,
-          confirm: true,
-          skipArchived: true
+          skipArchived: true,
         });
         
         deleted = deleteResult.deleted;

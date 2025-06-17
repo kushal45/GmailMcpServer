@@ -97,7 +97,7 @@ export class GmailMcpServer {
     // NOTE: CategorizationWorker startup moved to initialize() method to avoid race condition
     // List available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      console.error("[DEBUG] Handling list tools request");
+     // console.error("[DEBUG] Handling list tools request");
       return {
         tools: toolDefinitions,
       };
@@ -105,8 +105,8 @@ export class GmailMcpServer {
 
     // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      console.error("[DEBUG] Handling tool call:", request.params.name);
-      console.error("[DEBUG] Tool arguments:", request.params.arguments);
+      //console.error("[DEBUG] Handling tool call:", request.params.name);
+      //console.error("[DEBUG] Tool arguments:", request.params.arguments);
       try {
         const result = await handleToolCall(
           request.params.name,
@@ -146,12 +146,12 @@ export class GmailMcpServer {
     };
 
     process.on("unhandledRejection", (reason, promise) => {
-      logger.error("Unhandled Rejection at:", promise, "reason:", reason);
+      logger.error(`Unhandled Rejection with reason : ${JSON.stringify(reason)}`);
     });
 
     process.on("uncaughtException", (error) => {
       logger.error("Uncaught Exception:", error);
-      process.exit(1);
+      //process.exit(1);
     });
   }
 
@@ -217,7 +217,7 @@ export class GmailMcpServer {
       // Stop categorization worker before closing database
       if (this.categorizationWorker) {
         this.categorizationWorker.stop();
-        logger.debug("Categorization worker stopped");
+        logger.info("Categorization worker stopped");
       }
 
       // Shutdown cleanup automation engine

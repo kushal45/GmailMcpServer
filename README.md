@@ -347,8 +347,7 @@ Safely delete emails with confirmation.
 - `criteria` (object): Deletion criteria
 - `category` (string): Delete by importance category
 - `dry_run` (boolean): Preview without actual deletion
-- `confirm` (boolean): Confirmation flag
-- `max_count` (number): Maximum emails to delete
+- `max_count` (number): Maximum emails to delete [TODO]
 
 ```json
 {
@@ -361,9 +360,25 @@ Safely delete emails with confirmation.
 }
 ```
 
+#### `empty_trash`
+Empty Gmail trash folder permanently.
+**Purpose**: Permanently delete all emails in the trash
+**Parameters**: 
+- `max_count` (number): Maximum emails to delete
+- `dry_run` (boolean): Preview without actual deletion
+```json
+{
+  "tool": "empty_trash",
+  "arguments": {
+    "confirm": true,
+    "max_count": 100
+  }
+}
+```
+
 ### Cleanup Automation Tools
 
-#### `start_cleanup_automation`
+#### `start_cleanup_automation` [TODO]
 Start automated cleanup processes.
 
 **Purpose**: Begin continuous cleanup automation
@@ -381,7 +396,7 @@ Start automated cleanup processes.
 }
 ```
 
-#### `stop_cleanup_automation`
+#### `stop_cleanup_automation` [TODO]
 Stop automated cleanup processes.
 
 **Purpose**: Halt all cleanup automation
@@ -507,7 +522,7 @@ Cancel a running job.
 
 ### Automated Cleanup Setup
 ```json
-// 1. Start cleanup automation
+// 1. Start cleanup automation [TODO]
 {
   "tool": "start_cleanup_automation",
   "arguments": {

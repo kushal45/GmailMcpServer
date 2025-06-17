@@ -39,6 +39,7 @@ export const defaultToolsConfig: ToolsConfiguration = {
   enabledCategories: [
     'authentication',
     'email_management',
+    'job_management',    
     'search',
     'archive',
     'delete'

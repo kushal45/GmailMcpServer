@@ -1,6 +1,6 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../utils/logger.js';
-import { Job, JobStatus } from './jobStatusTypes.js';
+import { Job, JobStatus } from "../types/index.js";
 
 
 export class JobStatusStore {
@@ -97,6 +97,21 @@ export class JobStatusStore {
       return job;
     } catch (error) {
       logger.error(`Failed to get job status for ${job_id}: ${error}`);
+      throw error;
+    }
+  }
+
+  async cancelJob(job_id: string): Promise<void> {
+    this.validateDatabaseInitialization();
+
+    try {
+      await this.dbManager.updateJob(job_id, {
+        status: JobStatus.CANCELLED
+      });
+
+      logger.debug(`Cancelled job: ${job_id} (JobStatusStore ID: ${this.getInstanceId()})`);
+    } catch (error) {
+      logger.error(`Failed to cancel job ${job_id}: ${error}`);
       throw error;
     }
   }

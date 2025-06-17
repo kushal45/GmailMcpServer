@@ -131,7 +131,7 @@
    delete_emails {
      "year": 2022,
      "size_threshold": 5242880,
-     "confirm": true
+     "dry_run": false
    }
    ```
 
@@ -584,8 +584,7 @@ Deletes emails based on criteria with safety checks.
   year?: number,
   size_threshold?: number,
   skip_archived?: boolean,
-  dry_run?: boolean,
-  confirm?: boolean
+  dry_run?: boolean
 }
 ```
 

@@ -209,14 +209,17 @@ export interface ArchiveOptions {
   dryRun: boolean;
 }
 
-export interface DeleteOptions {
+export interface BasicDeletionOptions {
+  dryRun: boolean;
+  maxCount?: number;
+}
+
+export interface DeleteOptions extends BasicDeletionOptions {
   searchCriteria?: SearchCriteria;
   category?: 'high' | 'medium' | 'low';
   year?: number;
   sizeThreshold?: number;
   skipArchived: boolean;
-  dryRun: boolean;
-  confirm: boolean;
   orderBy?: 'date' | 'size' | 'id' ;
   orderDirection?: 'ASC' | 'DESC';
 }
@@ -225,8 +228,10 @@ export enum JobStatus {
   PENDING = 'PENDING',
   IN_PROGRESS = 'IN_PROGRESS',
   COMPLETED = 'COMPLETED',
-  FAILED = 'FAILED'
+  FAILED = 'FAILED',
+  CANCELLED="CANCELLED"
 }
+
 
 export interface Job {
   job_id: string;
@@ -322,7 +327,6 @@ export interface CleanupPolicy {
     time?: string; // HH:MM format
     enabled: boolean;
   };
-  
   created_at: Date;
   updated_at: Date;
 }

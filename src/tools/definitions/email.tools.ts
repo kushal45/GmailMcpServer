@@ -1,31 +1,9 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { EmailFetcher } from '../../email/EmailFetcher.js';
-import { DatabaseManager } from '../../database/DatabaseManager.js';
-import { AuthManager } from '../../auth/AuthManager.js';
-import { CacheManager } from '../../cache/CacheManager.js';
 import { PriorityCategory } from '../../types/index.js';
 import { logger } from '../../utils/logger.js';
 import { toolRegistry } from '../ToolRegistry.js';
 
 export function registerEmailTools() {
-  // Initialize required services
-  const dbManager = DatabaseManager.getInstance();
-  const authManager = new AuthManager();
-  const cacheManager = new CacheManager();
-  
-  // Initialize services
-  let initialized = false;
-  let emailFetcher: EmailFetcher;
-  
-  // Lazy initialization function
-  const getEmailFetcher = async () => {
-    if (!initialized) {
-      await dbManager.initialize();
-      emailFetcher = new EmailFetcher(dbManager, authManager, cacheManager);
-      initialized = true;
-    }
-    return emailFetcher;
-  };
   
   // Register list_emails tool
   const listEmailsTool: Tool = {
@@ -120,25 +98,9 @@ export function registerEmailTools() {
     }
   };
 
-  // get job status tool from job store 
-  const getJobStatusTool: Tool = {
-    name: 'get_job_status',
-    description: 'Get the status of a categorization job',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: {
-          type: 'string',
-          description: 'Job ID to retrieve'
-        }
-      },
-      required: ['id']
-    }
-  };
   
   // Register tools with the registry
   toolRegistry.registerTool(categorizeEmailTool, 'email_management');
-  toolRegistry.registerTool(getJobStatusTool,'email_management');
   toolRegistry.registerTool(listEmailsTool, 'email_management');
   toolRegistry.registerTool(getEmailDetailsTool, 'email_management');
   

@@ -145,7 +145,7 @@ toolsConfig.updateToolSetting('archive_emails', {
 ```json
 // tools.config.json
 {
-  "enabledCategories": ["authentication", "email_management", "search"],
+  "enabledCategories": ["authentication", "email_management", "search","archive","delete","job_management"],
   "toolSettings": {
     "delete_emails": {
       "enabled": false

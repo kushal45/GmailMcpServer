@@ -11,7 +11,7 @@ import { logger } from '../utils/logger.js';
 import { JobStatusStore } from '../database/JobStatusStore.js';
 import { JobQueue } from '../database/JobQueue.js';
 import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
-import { JobStatus } from '../database/jobStatusTypes.js';
+import { JobStatus } from '../types/index.js';
 
 interface ToolContext {
   authManager: AuthManager;
@@ -67,6 +67,9 @@ export async function handleToolCall(
       
       case 'delete_emails':
         return await handleDeleteEmails(args, context);
+
+      case 'empty_trash':
+        return await handleEmptyTrash(args, context);
       
       case 'save_search':
         return await handleSaveSearch(args, context);
@@ -76,6 +79,8 @@ export async function handleToolCall(
       
       case 'get_job_status':
         return await handleGetJobStatus(args, context);
+      case 'list_jobs':
+        return await handleListJobs(args, context);
       case 'get_email_details':
         return await handleGetEmailDetails(args, context);
       
@@ -358,13 +363,6 @@ async function handleDeleteEmails(args: any, context: ToolContext) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
-  // Require explicit confirmation for deletion
-  if (!args.confirm && !args.dry_run) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
-      'Deletion requires explicit confirmation. Set confirm: true or use dry_run: true to preview.'
-    );
-  }
 
   const result = await context.deleteManager.deleteEmails({
     searchCriteria: args.search_criteria,
@@ -373,7 +371,24 @@ async function handleDeleteEmails(args: any, context: ToolContext) {
     sizeThreshold: args.size_threshold,
     skipArchived: args.skip_archived !== false,
     dryRun: args.dry_run || false,
-    confirm: args.confirm || false
+    maxCount: args.max_count
+  });
+
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify(result, null, 2)
+    }]
+  };
+}
+
+async function handleEmptyTrash(args: any, context: ToolContext) {
+  if (!await context.authManager.hasValidAuth()) {
+    throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
+  }
+  const result = await context.deleteManager.emptyTrash({
+    dryRun: args.dry_run || false,
+    maxCount: args.max_count|| 10,
   });
 
   return {
@@ -454,6 +469,52 @@ async function handleGetJobStatus(args: any, context: ToolContext) {
         },
         emails: emailList
       }, null, 2)
+    }]
+  };
+}
+
+
+async function handleListJobs(args: any, context: ToolContext) {
+  if (!await context.authManager.hasValidAuth()) {
+    throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
+  }
+   const jobStatusStore = JobStatusStore.getInstance();
+  
+  // Validate singleton integrity before proceeding
+  JobStatusStore.validateSingletonIntegrity();
+  const jobs = await jobStatusStore.listJobs();
+  
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify(jobs, null, 2)
+    }]
+  };
+}
+
+async function handleCancelJob(args: any, context: ToolContext) {
+  if (!await context.authManager.hasValidAuth()) {
+    throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
+  }
+
+  const jobStatusStore = JobStatusStore.getInstance();
+  JobStatusStore.validateSingletonIntegrity();
+  const jobId = args.id;
+  if (!jobId) {
+    throw new McpError(ErrorCode.InvalidParams, 'jobId is required');
+  }
+  const jobStatus = await jobStatusStore.getJobStatus(jobId);
+  if (!jobStatus) {
+    throw new McpError(ErrorCode.InvalidRequest, `Job ${jobId} not found`);
+  }
+  if (jobStatus.status === JobStatus.COMPLETED || jobStatus.status === JobStatus.CANCELLED) {
+   throw new McpError(ErrorCode.InvalidRequest, `Job ${jobId} is already completed or cancelled`);
+  }
+  await jobStatusStore.cancelJob(jobId);
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify({ message: 'Job cancelled successfully' }, null, 2)
     }]
   };
 }

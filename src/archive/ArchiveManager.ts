@@ -18,7 +18,7 @@ export class ArchiveManager {
     this.authManager = authManager;
     this.databaseManager = databaseManager;
     // Use absolute path based on project root
-    this.archivePath = process.env.ARCHIVE_PATH || path.join(__dirname, '../../archives');
+    this.archivePath = path.join(__dirname, `../../${process.env.ARCHIVE_PATH}`) || path.join(__dirname, '../../archives');
   }
 
   async archiveEmails(options: ArchiveOptions): Promise<{ archived: number, location?: string, errors: string[] }> {
@@ -151,7 +151,8 @@ export class ArchiveManager {
     await fs.mkdir(this.archivePath, { recursive: true });
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `archive_${timestamp}.${options.exportFormat || 'json'}`;
+    const fileNamePrefix = options.exportPath||`archive_${timestamp}`;
+    const filename = `${fileNamePrefix}.${options.exportFormat || 'json'}`;
     const filepath = path.join(this.archivePath, filename);
 
     try {

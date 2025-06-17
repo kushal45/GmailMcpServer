@@ -1,9 +1,10 @@
+import { max } from 'lodash';
 import { ToolBuilder, ParameterTypes, ToolConfig } from '../base/ToolBuilder.js';
 
 export const deleteToolConfigs: ToolConfig[] = [
   {
     name: 'delete_emails',
-    description: 'Deletes emails based on criteria with safety checks',
+    description: 'Deletes emails based on criteria with safety checks (Move the emails to trash first)',
     category: 'delete',
     parameters: {
       search_criteria: ParameterTypes.object({}, 'Search criteria for emails to delete'),
@@ -12,7 +13,16 @@ export const deleteToolConfigs: ToolConfig[] = [
       size_threshold: ParameterTypes.number('Delete emails larger than bytes'),
       skip_archived: ParameterTypes.boolean('Skip archived emails', true),
       dry_run: ParameterTypes.boolean('Preview what would be deleted', false),
-      confirm: ParameterTypes.boolean('Confirm deletion (required for actual deletion)', false)
+      max_count: ParameterTypes.number('Maximum number of emails to delete', 10),
+    }
+  },
+  {
+    name: 'empty_trash',
+    description: 'Empties the trash folder when dryrun is false',
+    category: 'delete',
+    parameters: {
+      dry_run: ParameterTypes.boolean('Preview what would be deleted', false),
+      max_count: ParameterTypes.number('Maximum number of emails to delete', 10),
     }
   },
   {
