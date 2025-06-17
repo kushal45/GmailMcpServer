@@ -291,7 +291,7 @@ export class DeleteManager {
       const ListTrashResult = await this.listTrashEmails(gmail,trashOption?.maxCount);
       messages = ListTrashResult.messages;
       errors.push(...ListTrashResult.errors);
-      if (messages.length === 0) {
+      if (messages.length === 0 || errors.length > 0) {
         return { deleted: 0, errors };
       }
       if (trashOption.dryRun) {

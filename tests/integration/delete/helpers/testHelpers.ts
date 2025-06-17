@@ -505,7 +505,6 @@ export function createDeleteOptions(overrides?: Partial<DeleteOptions>): DeleteO
   return {
     skipArchived: false,
     dryRun: false,
-    confirm: false,
     ...overrides
   };
 }
