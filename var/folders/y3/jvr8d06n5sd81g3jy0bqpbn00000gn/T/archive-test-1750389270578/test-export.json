@@ -1,0 +1,57 @@
+{
+  "exportDate": "2025-06-20T03:14:30.642Z",
+  "emailCount": 2,
+  "emails": [
+    {
+      "id": "email1",
+      "subject": "Test Email 1",
+      "sender": "sender1@example.com",
+      "recipients": [
+        "recipient1@example.com"
+      ],
+      "date": "2023-01-01T00:00:00.000Z",
+      "year": 2023,
+      "size": 1024,
+      "hasAttachments": false,
+      "labels": [
+        "INBOX",
+        "RESTORED"
+      ],
+      "snippet": "This is a test email 1",
+      "archived": true,
+      "archiveDate": "2025-06-20T03:14:30.617Z"
+    },
+    {
+      "id": "email2",
+      "subject": "Test Email 2",
+      "sender": "sender2@example.com",
+      "recipients": [
+        "recipient2@example.com"
+      ],
+      "date": "2023-02-01T00:00:00.000Z",
+      "year": 2023,
+      "size": 2048,
+      "hasAttachments": true,
+      "labels": [
+        "INBOX",
+        "IMPORTANT",
+        "RESTORED"
+      ],
+      "snippet": "This is a test email 2",
+      "archived": true,
+      "archiveDate": "2025-06-20T03:14:30.618Z"
+    }
+  ],
+  "metadata": {
+    "exportTimestamp": "2025-06-20T03:14:30.642Z",
+    "totalEmails": 2,
+    "sizeStats": {
+      "totalSize": 3072,
+      "averageSize": 1536
+    },
+    "dateRange": {
+      "earliest": "2023-01-01T00:00:00.000Z",
+      "latest": "2023-02-01T00:00:00.000Z"
+    }
+  }
+}

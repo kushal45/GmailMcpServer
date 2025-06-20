@@ -21,6 +21,7 @@ import { CategorizationEngine } from "./categorization/CategorizationEngine.js";
 import { CategorizationWorker } from "./categorization/CategorizationWorker.js";
 import { JobStatusStore } from "./database/JobStatusStore.js";
 import { CleanupAutomationEngine } from "./cleanup/CleanupAutomationEngine.js";
+import { setupFormatterRegistry } from "./archive/setupFormatters.js";
 
 export class GmailMcpServer {
   private server: Server;
@@ -66,9 +67,11 @@ export class GmailMcpServer {
       this.databaseManager,
       this.emailFetcher
     );
+    const formatRegistry = setupFormatterRegistry()
     this.archiveManager = new ArchiveManager(
       this.authManager,
-      this.databaseManager
+      this.databaseManager,
+      formatRegistry
     );
     this.deleteManager = new DeleteManager(
       this.authManager,

@@ -204,9 +204,10 @@ export interface ArchiveOptions {
   year?: number;
   olderThanDays?: number;
   method: 'gmail' | 'export';
-  exportFormat?: 'mbox' | 'json';
+  exportFormat?: 'mbox' | 'json' | 'csv';
   exportPath?: string;
   dryRun: boolean;
+  includeAttachments?: boolean;
 }
 
 export interface BasicDeletionOptions {
