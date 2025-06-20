@@ -80,6 +80,7 @@ export interface EmailIndex {
   // Analysis Metadata
   analysisTimestamp?: Date;
   analysisVersion?: string;
+  totalEmailCount?: number;
 }
 
 export interface SearchCriteria {
@@ -95,6 +96,7 @@ export interface SearchCriteria {
   offset?: number;
   id?:string;
   ids?:string[];
+  categories?:PriorityCategory[];
 }
 
 export interface SearchEngineCriteria extends SearchCriteria {
@@ -223,6 +225,7 @@ export interface DeleteOptions extends BasicDeletionOptions {
   skipArchived: boolean;
   orderBy?: 'date' | 'size' | 'id' ;
   orderDirection?: 'ASC' | 'DESC';
+  categories?: PriorityCategory[];
 }
 
 export enum JobStatus {

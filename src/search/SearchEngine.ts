@@ -16,26 +16,16 @@ export class SearchEngine {
     logger.info('Searching emails', { criteria });
 
     try {
-      // First search in local database
+      // First search in local database with SQL-level filtering
       let dbResults = await this.databaseManager.searchEmails({
         ...criteria,
-        limit: criteria.limit || 50
+        limit: criteria.limit || 50,
       });
-
-      // Filter by labels if specified
-      if (criteria.labels && criteria.labels.length > 0) {
-        dbResults = dbResults.filter(email =>
-          Array.isArray(email.labels) && criteria.labels!.every(label => email.labels!.includes(label))
-        );
-      }
-
-      // Filter by hasAttachments if specified
-      if (typeof criteria.hasAttachments === 'boolean') {
-        dbResults = dbResults.filter(email => email.hasAttachments === criteria.hasAttachments);
-      }
+     
 
       // If we have a text query, we need to filter further
-      if (criteria.query) {
+      // Text search is still done in-memory because it requires more complex pattern matching
+      if (criteria.query != null) {
         const filtered = dbResults.filter(email => 
           this.matchesTextQuery(email, criteria.query!)
         );
@@ -48,7 +38,7 @@ export class SearchEngine {
 
       return {
         emails: dbResults,
-        total: dbResults.length
+        total: dbResults.length > 0 ? (dbResults[0]?.totalEmailCount?? 0): 0
       };
     } catch (error) {
       logger.error('Search error:', error);
@@ -57,12 +47,7 @@ export class SearchEngine {
   }
 
   private matchesTextQuery(email: EmailIndex, query: string): boolean {
-    const searchableText = `
-      ${email.subject} 
-      ${email.sender} 
-      ${email?.recipients?.join(' ')} 
-      ${email.snippet}
-    `.toLowerCase();
+    const searchableText = `${email.subject}${email.sender}${email?.recipients?.join(' ')} ${email.snippet}`.toLowerCase();
 
     const queryLower = query.toLowerCase();
     
