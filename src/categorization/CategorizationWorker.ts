@@ -1,7 +1,8 @@
 
-import { JobStatus,JobStatusStore,JobQueue } from '../database/index.js';
+import {JobStatusStore,JobQueue } from '../database/index.js';
 import { logger } from '../utils/logger.js';
 import { CategorizationEngine } from './CategorizationEngine.js';
+import { JobStatus } from '../types/index.js';
 
 /**
  * Worker that processes categorization jobs from the queue

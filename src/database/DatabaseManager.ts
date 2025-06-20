@@ -1223,7 +1223,7 @@ export class DatabaseManager {
     await this.run(sql, ["trash", ...emailIds]);
   }
 
-  async deleteEmailIndexs(emails: EmailIndex[]): Promise<number> {
+  async deleteEmailIds(emails: EmailIndex[]): Promise<number> {
     if (emails.length === 0) return 0;
     const sql = `DELETE FROM email_index WHERE id IN (${emails
       .map(() => "?")

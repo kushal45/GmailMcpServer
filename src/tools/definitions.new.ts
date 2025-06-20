@@ -6,6 +6,7 @@ import { searchTools } from './definitions/search.tools.js';
 import { archiveTools } from './definitions/archive.tools.js';
 import { deleteTools } from './definitions/delete.tools.js';
 import { logger } from '../utils/logger.js';
+import { registerJobTools } from './definitions/job.tools.js';
 
 // Register all built-in tools
 export function registerBuiltInTools(): void {
@@ -13,11 +14,11 @@ export function registerBuiltInTools(): void {
 
   // Register tools by category
   authTools.forEach(tool => toolRegistry.registerTool(tool, 'authentication'));
-  //emailTools.forEach(tool => toolRegistry.registerTool(tool, 'email_management'));
   searchTools.forEach(tool => toolRegistry.registerTool(tool, 'search'));
   archiveTools.forEach(tool => toolRegistry.registerTool(tool, 'archive'));
   deleteTools.forEach(tool => toolRegistry.registerTool(tool, 'delete'));
   registerEmailTools();
+  registerJobTools();
   const stats = toolRegistry.getStats();
   logger.info('Built-in tools registered', stats);
 }

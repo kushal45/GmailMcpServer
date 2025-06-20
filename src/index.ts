@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import dotenv from "dotenv";
-import {  GmailMcpServer } from "./server.js";
+import { GmailMcpServer } from "./server.js";
 import path from "path";
 import { fileURLToPath } from "url";
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Main entry point for the Gmail MCP server.
@@ -35,13 +38,12 @@ async function main() {
         },
       })
     );
-    console.error("Starting Gmail MCP server...");
+    //console.error("Starting Gmail MCP server...");
     const server = new GmailMcpServer();
     const transport = new StdioServerTransport();
-
-    console.error("Connecting to transport...");
+    //console.error("Connecting to transport...");
     await server.connect(transport);
-    console.error("Server connected successfully");
+    //console.error("Server connected successfully");
 
     // Handle graceful shutdown
     process.on("SIGINT", async () => {
@@ -51,9 +53,12 @@ async function main() {
     });
 
     process.on("SIGTERM", async () => {
-      console.error("Received SIGTERM");
-      await server.close();
-      process.exit(0);
+      console.error("Received SIGTERM sleeping for 4 seconds");
+       await sleep(4000);
+       process.stdin.resume();
+       process.stdout.resume();
+       await server.close();
+       process.exit(0);
     });
 
     // Keep the process alive
@@ -64,20 +69,8 @@ async function main() {
   }
 }
 
-// Handle unhandled promise rejections
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection at:", promise, "reason:", reason);
-  // Don't exit on unhandled rejection - let the server continue
-});
-
-process.on("uncaughtException", (error) => {
-  console.error("Uncaught Exception:", error);
-  // Exit on uncaught exception
-  process.exit(1);
-});
-
 // Run the server
 main().catch((error) => {
-  console.error("Main function error:", error);
+  //console.error("Main function error:", error);
   process.exit(1);
 });

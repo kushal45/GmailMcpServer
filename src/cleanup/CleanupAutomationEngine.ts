@@ -75,7 +75,7 @@ export class CleanupAutomationEngine {
     stalenessScorer?: StalenessScorer,
     policyEngine?: CleanupPolicyEngine
   ) {
-    console.log(`🏗️🏗️🏗️ CONSTRUCTOR: CleanupAutomationEngine constructor called`);
+    console.error(`CONSTRUCTOR: CleanupAutomationEngine constructor called`);
     this.databaseManager = databaseManager || DatabaseManager.getInstance();
     this.jobQueue = jobQueue || new JobQueue();
     this.accessTracker = accessTracker || AccessPatternTracker.getInstance();
@@ -651,8 +651,7 @@ export class CleanupAutomationEngine {
             ids: deleteEmails.map(email => email.id),
           },
           dryRun: false,
-          confirm: true,
-          skipArchived: true
+          skipArchived: true,
         });
         
         deleted = deleteResult.deleted;
