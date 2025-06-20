@@ -1645,8 +1645,8 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 **⭐ Star this project if you find it useful!**
 
-[![GitHub forks](https://img.shields.io/github/forks/kushal45/gmail-mcp-server?style=social)](https://github.com/username/gmail-mcp-server)
-[![Follow on X](https://img.shields.io//follow/?style=social)](https://x.com/kushalB22632020)
+[![GitHub stars](https://img.shields.io/github/stars/kushal45/GmailMcpServer?style=social)](https://github.com/kushal45/GmailMcpServer)
+[![Follow on X](https://img.shields.io/twitter/follow/kushalB22632020?style=social)](https://x.com/kushalB22632020)
 [![Follow on LinkedIn](https://img.shields.io/badge/LinkedIn-Follow-blue?style=social&logo=linkedin)](https://www.linkedin.com/in/kushal-bhattacharya1993/)
 
 </div>
