@@ -67,7 +67,7 @@ The Gmail MCP Server is a comprehensive Model Context Protocol server that provi
 - [x] External export functionality (MBOX, JSON, CSV)
 - [x] Archive rules engine with scheduling
 - [x] Archive metadata indexing
-- [x] Restore functionality with label preservation
+- [x] Restore functionality with label preservation and robust error handling
 - [x] Archive statistics and reporting
 - [x] Cloud storage integration support
 
@@ -562,16 +562,19 @@ After detailed code analysis of the Gmail MCP Server V1 codebase, the following 
 **File:** [`src/archive/ArchiveManager.ts`](src/archive/ArchiveManager.ts)
 
 1. **Hardcoded File Naming Pattern** - Lines 153-155 [Fixed]
+   - ✅ **Code Updated:** [Fixed] 
    - **Issue:** Fixed filename format `archive_${timestamp}.${format}` with no path-based organization
    - **Impact:** Poor file organization, no support for user-defined naming conventions
    - **Fix:** Implement configurable file naming strategy with template support
 
 2. **Incomplete Export Format Support** - Lines 158-171
+   - ✅ **Code Updated** [Fixed] 
    - **Issue:** Only JSON export implemented, MBOX format throws "not yet implemented" error
    - **Impact:** Critical functionality gap for standard email export formats
    - **Fix:** Implement MBOX export and create generic file formatter interface
 
 3. **Missing Generic File Formatter Logic**
+    - ✅ **Code Updated** [Fixed]
    - **Issue:** No abstraction layer for different export formats
    - **Impact:** Code duplication and difficulty adding new formats
    - **Fix:** Create [`IFileFormatter`](src/archive/formatters/) interface with format-specific implementations
@@ -626,7 +629,7 @@ After detailed code analysis of the Gmail MCP Server V1 codebase, the following 
 **Impact:** Missing test coverage for critical components
 
 1. **Archive Management System**
-   - **Missing:** Unit tests for [`ArchiveManager`](src/archive/ArchiveManager.ts)
+   - ✅ **Completed:** Unit tests for [`ArchiveManager`](src/archive/ArchiveManager.ts) including proper mock rejection handling
    - **Missing:** Integration tests for export functionality
    - **Priority:** High - Critical for data integrity
 
