@@ -38,7 +38,7 @@ export class SearchEngine {
 
       return {
         emails: dbResults,
-        total: dbResults[0].totalEmailCount??dbResults.length
+        total: dbResults.length > 0 ? (dbResults[0]?.totalEmailCount?? 0): 0
       };
     } catch (error) {
       logger.error('Search error:', error);
