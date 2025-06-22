@@ -137,7 +137,7 @@ export class FileAccessControlManager {
         file_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         permission_type TEXT NOT NULL CHECK(permission_type IN ('read', 'write', 'delete', 'share')),
-        granted_by TEXT NOT NULL,
+        granted_by TEXT,
         granted_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
         expires_at INTEGER,
         is_active INTEGER NOT NULL DEFAULT 1,

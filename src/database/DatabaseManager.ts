@@ -1035,6 +1035,7 @@ export class DatabaseManager {
       archived: row.archived === 1,
       archiveDate: row.archive_date ? new Date(row.archive_date) : undefined,
       archiveLocation: row.archive_location,
+      user_id: row.user_id || undefined,  // Added for multi-user support
 
       // Importance Analysis Results
       importanceScore: row.importance_score || undefined,
@@ -1104,14 +1105,40 @@ export class DatabaseManager {
     return id;
   }
 
-  async getArchiveRules(activeOnly: boolean = false): Promise<ArchiveRule[]> {
+  /**
+   * Get archive rules with user context for multi-user support
+   * @param activeOnly Filter for enabled rules only
+   * @param userId Optional user ID (defaults to the instance's user ID)
+   */
+  async getArchiveRules(activeOnly: boolean = false, userId?: string): Promise<ArchiveRule[]> {
+    // Use the provided userId or fall back to the instance userId
+    const ownerUserId = userId || this.userId;
+    
     let sql = "SELECT * FROM archive_rules";
-    if (activeOnly) {
-      sql += " WHERE enabled = 1";
+    const params: any[] = [];
+    
+    // Build WHERE clause conditions
+    const conditions: string[] = [];
+    
+    // Filter by user_id if we're in multi-user mode
+    if (ownerUserId) {
+      conditions.push("user_id = ?");
+      params.push(ownerUserId);
     }
+    
+    // Filter by enabled status if requested
+    if (activeOnly) {
+      conditions.push("enabled = 1");
+    }
+    
+    // Add WHERE clause if we have conditions
+    if (conditions.length > 0) {
+      sql += " WHERE " + conditions.join(" AND ");
+    }
+    
     sql += " ORDER BY created DESC";
 
-    const rows = await this.all(sql);
+    const rows = await this.all(sql, params);
     return rows.map((row) => ({
       id: row.id,
       name: row.name,

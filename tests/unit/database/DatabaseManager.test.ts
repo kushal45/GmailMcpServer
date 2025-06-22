@@ -57,7 +57,7 @@ describe('DatabaseManager', () => {
       return mockDb;
     });
 
-    dbManager = new DatabaseManager();
+    dbManager = new DatabaseManager(undefined);
     // Inject the mockDb into the dbManager instance for all tests
     (dbManager as any).db = mockDb;
   });
@@ -276,7 +276,7 @@ describe('DatabaseManager', () => {
           callback(null, mockRows);
         });
 
-        const result = await dbManager.getArchiveRules();
+        const result = await dbManager.getArchiveRules(false, 'test-user-id');
 
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual(expect.objectContaining({
@@ -295,7 +295,7 @@ describe('DatabaseManager', () => {
           callback(null, []);
         });
 
-        await dbManager.getArchiveRules(true);
+        await dbManager.getArchiveRules(true, 'test-user-id');
 
         const sqlCall = mockDb.all.mock.calls[0][0];
         expect(sqlCall).toContain('WHERE enabled = 1');

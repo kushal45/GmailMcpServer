@@ -52,13 +52,17 @@ export class ArchiveManager {
     this.databaseManager = databaseManager;
     this.formatterRegistry = formatterRegistry;
     this.fileAccessControl = fileAccessControl;
-    // Use absolute path based on project root
+    // Handle both absolute and relative paths for ARCHIVE_PATH
     // @ts-ignore
-    const archivePath = process.env.ARCHIVE_PATH;
-    this.archivePath = path.join(
-      __dirname,
-      `../../${archivePath || "archives"}`
-    );
+    const archivePath = process.env.ARCHIVE_PATH || "archives";
+    
+    if (path.isAbsolute(archivePath)) {
+      // Use absolute path directly (e.g., for tests)
+      this.archivePath = archivePath;
+    } else {
+      // Use relative path from project root (e.g., for production)
+      this.archivePath = path.join(__dirname, `../../${archivePath}`);
+    }
   }
 
   async archiveEmails(
@@ -94,7 +98,14 @@ export class ArchiveManager {
         // Archive to Gmail (add ARCHIVED label)
         const result = await this.archiveToGmail(emails, userContext);
         archived = result.archived;
+        location = result.location;
         errors.push(...result.errors);
+        
+        logger.info("Gmail archive result processed", {
+          archived,
+          location,
+          errors_count: errors.length
+        });
       } else if (options.method === "export") {
         // Export to file with file access control
         const result = await this.exportToFile(emails, options, userContext);
@@ -202,7 +213,12 @@ export class ArchiveManager {
   private async archiveToGmail(
     emails: EmailIndex[],
     userContext: UserContext
-  ): Promise<{ archived: number; errors: string[] }> {
+  ): Promise<{ archived: number; errors: string[]; location: string }> {
+    logger.info("Starting Gmail archive process", {
+      email_count: emails.length,
+      user_id: userContext.user_id
+    });
+
     // Get user-specific Gmail client
     const gmail = await this.authManager.getGmailClient(userContext.session_id);
     let archived = 0;
@@ -214,6 +230,11 @@ export class ArchiveManager {
       const batch = emails.slice(i, i + batchSize);
 
       try {
+        logger.info(`Processing Gmail archive batch ${i / batchSize + 1}`, {
+          batch_size: batch.length,
+          email_ids: batch.map(e => e.id)
+        });
+
         await gmail.users.messages.batchModify({
           userId: "me",
           requestBody: {
@@ -224,6 +245,10 @@ export class ArchiveManager {
         });
 
         archived += batch.length;
+        logger.info(`Gmail archive batch ${i / batchSize + 1} completed`, {
+          archived_in_batch: batch.length,
+          total_archived: archived
+        });
       } catch (error) {
         const errorMsg = `Failed to archive batch ${
           i / batchSize + 1
@@ -233,7 +258,16 @@ export class ArchiveManager {
       }
     }
 
-    return { archived, errors };
+    // Gmail archives are stored with location identifier "GMAIL_ARCHIVED"
+    const location = "GMAIL_ARCHIVED";
+    
+    logger.info("Gmail archive process completed", {
+      total_archived: archived,
+      errors_count: errors.length,
+      archive_location: location
+    });
+
+    return { archived, errors, location };
   }
 
   private async exportToFile(
@@ -407,18 +441,37 @@ export class ArchiveManager {
 
       // Step 2: Determine which emails to restore - must have emailIds
       if (options.emailIds && options.emailIds.length > 0) {
+        console.log("=== RESTORE: Retrieving emails by IDs ===");
+        console.log("Email IDs:", options.emailIds);
+        console.log("User ID:", userContext.user_id);
+
         // Use provided email IDs with user context filtering
         emailsToRestore = await this.databaseManager.getEmailsByIds(
           options.emailIds
         );
 
+        console.log("=== RESTORE: Retrieved emails from database ===");
+        console.log("Total found:", emailsToRestore.length);
+        emailsToRestore.forEach(email => {
+          console.log(`Email ${email.id}: archived=${email.archived}, archiveLocation=${email.archiveLocation}, user_id=${(email as any).user_id}`);
+        });
+
         // Filter only archived emails that belong to the user
+        const beforeFilter = emailsToRestore.length;
         emailsToRestore = emailsToRestore.filter((email) =>
           email.archived &&
           (email as any).user_id === userContext.user_id
         );
 
+        console.log("=== RESTORE: After filtering ===");
+        console.log(`Before filter: ${beforeFilter}, After filter: ${emailsToRestore.length}`);
+        console.log("User ID filter:", userContext.user_id);
+        emailsToRestore.forEach(email => {
+          console.log(`Filtered email ${email.id}: archived=${email.archived}, archiveLocation=${email.archiveLocation}, user_id=${(email as any).user_id}`);
+        });
+
         if (emailsToRestore.length === 0) {
+          console.log("=== RESTORE: No emails found for restoration ===");
           return {
             restored: 0,
             errors: ["No archived emails found with the provided IDs"],
@@ -437,7 +490,14 @@ export class ArchiveManager {
 
       // Determine the archive method based on the archived emails
       const archiveMethod =
-        emailsToRestore[0].archiveLocation === "ARCHIVED" ? "gmail" : "export";
+        emailsToRestore[0].archiveLocation === "GMAIL_ARCHIVED" ? "gmail" : "export";
+        
+      logger.info("Detected archive method for restore", {
+        archive_method: archiveMethod,
+        archive_location: emailsToRestore[0].archiveLocation,
+        email_count: emailsToRestore.length,
+        email_ids: emailsToRestore.map(e => e.id)
+      });
 
       if (archiveMethod === "gmail") {
         // Restore from Gmail archive (remove ARCHIVED label, add back INBOX)
@@ -759,13 +819,8 @@ export class ArchiveManager {
       // Validate user session
       await this.validateUserSession(userContext);
 
-      // Get all rules and filter by user_id (need to implement user filtering in DatabaseManager)
-      const allRules = await this.databaseManager.getArchiveRules(options.activeOnly);
-      
-      // Filter rules by user_id (temporary solution until DatabaseManager supports user filtering)
-      const userRules = allRules.filter((rule: any) =>
-        !rule.user_id || rule.user_id === userContext.user_id
-      );
+      // Get user-specific rules with proper user filtering in DatabaseManager
+      const userRules = await this.databaseManager.getArchiveRules(options.activeOnly, userContext.user_id);
       
       return { rules: userRules };
     } catch (error) {
@@ -832,7 +887,7 @@ export class ArchiveManager {
       system_run: !userContext
     });
 
-    const rules = await this.databaseManager.getArchiveRules(true);
+    const rules = await this.databaseManager.getArchiveRules(true, userContext?.user_id);
 
     for (const rule of rules) {
       // Filter rules by user if userContext is provided
