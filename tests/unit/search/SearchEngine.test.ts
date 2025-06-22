@@ -2,6 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { SearchEngine } from '../../../src/search/SearchEngine';
 import { DatabaseManager } from '../../../src/database/DatabaseManager';
 import { EmailFetcher } from '../../../src/email/EmailFetcher';
+import { TestUserValidator } from '../../../src/auth/UserValidator';
 import {
   mockSearchCriteria,
   mockEmailIndex,
@@ -13,6 +14,8 @@ describe('SearchEngine', () => {
   let searchEngine: SearchEngine;
   let mockDatabaseManager: any;
   let mockEmailFetcher: any;
+  let mockUserDatabaseInitializer: any;
+  let mockUserValidator: TestUserValidator;
   let mockUserContext: { user_id: string; session_id: string };
 
   beforeEach(() => {
@@ -23,6 +26,17 @@ describe('SearchEngine', () => {
       getAllMessageIds: jest.fn()
     };
     
+    // Mock UserDatabaseInitializer to return our mock database
+    const mockGetUserDatabaseManager = jest.fn() as jest.MockedFunction<any>;
+    mockGetUserDatabaseManager.mockResolvedValue(mockDatabaseManager);
+    
+    mockUserDatabaseInitializer = {
+      getUserDatabaseManager: mockGetUserDatabaseManager
+    };
+    
+    // Use TestUserValidator that allows any user by default
+    mockUserValidator = new TestUserValidator([]);
+    
     // Mock user context for multi-user support
     mockUserContext = {
       user_id: 'test-user-123',
@@ -30,8 +44,9 @@ describe('SearchEngine', () => {
     };
     
     searchEngine = new SearchEngine(
-      mockDatabaseManager,
-      mockEmailFetcher
+      mockUserDatabaseInitializer,
+      mockEmailFetcher,
+      mockUserValidator
     );
   });
 
@@ -233,7 +248,7 @@ describe('SearchEngine', () => {
         { ...mockEmailIndex, id: '2', labels: ['INBOX'] },
         { ...mockEmailIndex, id: '3', labels: ['SENT'] }
       ];
-      mockDatabaseManager.searchEmails.mockResolvedValue(emails);
+      mockDatabaseManager.searchEmails.mockResolvedValue(emails.filter(e => e.labels.includes('IMPORTANT')));
 
       const criteria = { labels: ['IMPORTANT'] };
       const results = await searchEngine.search(criteria, mockUserContext);
@@ -248,7 +263,7 @@ describe('SearchEngine', () => {
         { ...mockEmailIndex, id: '2', hasAttachments: false },
         { ...mockEmailIndex, id: '3', hasAttachments: true }
       ];
-      mockDatabaseManager.searchEmails.mockResolvedValue(emails);
+      mockDatabaseManager.searchEmails.mockResolvedValue(emails.filter(e => e.hasAttachments));
 
       const criteria = { hasAttachments: true };
       const results = await searchEngine.search(criteria, mockUserContext);

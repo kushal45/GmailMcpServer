@@ -184,6 +184,9 @@ export class DatabaseManager {
         `CREATE INDEX IF NOT EXISTS idx_email_size ON email_index(size)`,
         `CREATE INDEX IF NOT EXISTS idx_email_archived ON email_index(archived)`,
         `CREATE INDEX IF NOT EXISTS idx_email_date ON email_index(date)`,
+        `CREATE INDEX IF NOT EXISTS idx_email_has_attachments ON email_index(has_attachments)`,
+        // Add index for JSON label searches to improve performance
+        `CREATE INDEX IF NOT EXISTS idx_email_labels ON email_index(labels)`,
 
         // Archive rules table
         `CREATE TABLE IF NOT EXISTS archive_rules (
@@ -942,7 +945,7 @@ export class DatabaseManager {
    * @param criteria Search criteria including optional user_id
    */
   async searchEmails(criteria: SearchEngineCriteria): Promise<EmailIndex[]> {
-    let sql = "SELECT * FROM email_index WHERE 1=1";
+    let sql = "SELECT *,COUNT(*) OVER () AS total_email_count FROM email_index WHERE 1=1";
     const params: any[] = [];
 
     // Filter by user_id if provided in criteria or available in the instance
@@ -957,6 +960,12 @@ export class DatabaseManager {
     } else if (criteria?.category) {
       sql += " AND category = ?";
       params.push(criteria.category);
+    }
+
+    if(criteria?.categories) {
+      const placeholders = criteria.categories.map(() => "?").join(", ");
+      sql += ` AND category IN (${placeholders})`; // Insert the placeholders into the SQL
+      params.push(...criteria.categories);
     }
 
     if (criteria?.ids) {
@@ -1000,6 +1009,23 @@ export class DatabaseManager {
     if (criteria.sender) {
       sql += " AND sender LIKE ?";
       params.push(`%${criteria.sender}%`);
+    }
+
+    // Add SQL-level filtering for labels
+    if (criteria.labels && criteria.labels.length > 0) {
+      criteria.labels.forEach(label => {
+        // This ensures each specified label is in the JSON array
+        // JSON_EXTRACT with ->> operator extracts text without quotes for comparison
+        sql += " AND JSON_EXTRACT(labels, '$') LIKE ?";
+        // Escape special characters in the label and ensure it's a complete JSON string match
+        params.push(`%"${label.replace(/"/g, '\\"')}"%`);
+      });
+    }
+
+    // Add SQL-level filtering for hasAttachments
+    if (typeof criteria.hasAttachments === 'boolean') {
+      sql += " AND has_attachments = ?";
+      params.push(criteria.hasAttachments ? 1 : 0);
     }
 
     sql += " ORDER BY date DESC";
@@ -1071,6 +1097,7 @@ export class DatabaseManager {
         ? new Date(row.analysis_timestamp)
         : undefined,
       analysisVersion: row.analysis_version || undefined,
+      totalEmailCount: row.total_email_count || undefined,
     };
   }
 

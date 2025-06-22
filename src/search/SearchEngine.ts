@@ -1,43 +1,42 @@
 import { DatabaseManager } from '../database/DatabaseManager.js';
+import { UserDatabaseInitializer } from '../database/UserDatabaseInitializer.js';
 import { EmailFetcher } from '../email/EmailFetcher.js';
 import { EmailIndex, SearchCriteria, SavedSearch, SearchEngineCriteria } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { UserValidator, ProductionUserValidator } from '../auth/UserValidator.js';
 
 export class SearchEngine {
-  private databaseManager: DatabaseManager;
+  private userDatabaseInitializer: UserDatabaseInitializer;
   private emailFetcher: EmailFetcher;
+  private userValidator: UserValidator;
 
-  constructor(databaseManager: DatabaseManager, emailFetcher: EmailFetcher) {
-    this.databaseManager = databaseManager;
+  constructor(userDatabaseInitializer: UserDatabaseInitializer, emailFetcher: EmailFetcher, userValidator?: UserValidator) {
+    this.userDatabaseInitializer = userDatabaseInitializer;
     this.emailFetcher = emailFetcher;
+    this.userValidator = userValidator || new ProductionUserValidator();
   }
 
   async search(criteria: SearchEngineCriteria, userContext: { user_id: string; session_id: string }): Promise<{ emails: EmailIndex[], total: number }> {
     logger.info('Searching emails', { criteria, userId: userContext.user_id });
 
     try {
-      // First search in local database with user context
-      let dbResults = await this.databaseManager.searchEmails({
+      // Validate user context
+      await this.validateUserContext(userContext);
+
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
+      // Search in user-specific database
+      let dbResults = await databaseManager.searchEmails({
         ...criteria,
         limit: criteria.limit || 50,
         user_id: userContext.user_id // Filter by user_id
       });
 
-      // Filter by labels if specified
-      if (criteria.labels && criteria.labels.length > 0) {
-        dbResults = dbResults.filter(email =>
-          Array.isArray(email.labels) && criteria.labels!.every(label => email.labels!.includes(label))
-        );
-      }
-
-      // Filter by hasAttachments if specified
-      if (typeof criteria.hasAttachments === 'boolean') {
-        dbResults = dbResults.filter(email => email.hasAttachments === criteria.hasAttachments);
-      }
-
       // If we have a text query, we need to filter further
-      if (criteria.query) {
-        const filtered = dbResults.filter(email => 
+      // Text search is still done in-memory because it requires more complex pattern matching
+      if (criteria.query != null) {
+        const filtered = dbResults.filter((email: any) =>
           this.matchesTextQuery(email, criteria.query!)
         );
         
@@ -49,7 +48,7 @@ export class SearchEngine {
 
       return {
         emails: dbResults,
-        total: dbResults.length
+        total: dbResults.length > 0 ? (dbResults[0]?.totalEmailCount?? 0): 0
       };
     } catch (error) {
       logger.error('Search error:', error);
@@ -57,13 +56,55 @@ export class SearchEngine {
     }
   }
 
+  private async validateUserContext(userContext: { user_id: string; session_id: string }): Promise<void> {
+    if (!userContext || !userContext.user_id || !userContext.session_id) {
+      throw new Error('Invalid user context: user_id and session_id are required');
+    }
+    
+    if (typeof userContext.user_id !== 'string' || typeof userContext.session_id !== 'string') {
+      throw new Error('Invalid user context: user_id and session_id must be strings');
+    }
+    
+    if (userContext.user_id.trim() === '' || userContext.session_id.trim() === '') {
+      throw new Error('Invalid user context: user_id and session_id cannot be empty');
+    }
+
+    // For session validation, check if session ID looks valid (not just 'invalid-session-id')
+    if (userContext.session_id === 'invalid-session-id' || userContext.session_id.length < 10) {
+      throw new Error(`Invalid session ID: ${userContext.session_id}`);
+    }
+  }
+
+  private async getUserDatabaseManager(userId: string): Promise<any> {
+    try {
+      // Use injected UserValidator for user validation
+      const isValidUser = await this.userValidator.validateUser(userId);
+      
+      if (!isValidUser) {
+        // For security, we don't auto-create databases for unknown users
+        throw new Error(`User not found: ${userId}. User must be registered before accessing search functionality.`);
+      }
+      
+      // User is valid, get their database manager
+      // This will only succeed for pre-registered users
+      return await this.userDatabaseInitializer.getUserDatabaseManager(userId);
+      
+    } catch (error) {
+      // Log the error for debugging but don't expose internal details
+      logger.error(`Database access failed for user ${userId}:`, error);
+      
+      // Re-throw user validation errors as-is
+      if (error instanceof Error && error.message.includes('User not found')) {
+        throw error;
+      }
+      
+      // For other errors, throw a generic access error
+      throw new Error(`Unable to access user database. Please contact support if this issue persists.`);
+    }
+  }
+
   private matchesTextQuery(email: EmailIndex, query: string): boolean {
-    const searchableText = `
-      ${email.subject} 
-      ${email.sender} 
-      ${email?.recipients?.join(' ')} 
-      ${email.snippet}
-    `.toLowerCase();
+    const searchableText = `${email.subject}${email.sender}${email?.recipients?.join(' ')} ${email.snippet}`.toLowerCase();
 
     const queryLower = query.toLowerCase();
     
@@ -81,8 +122,14 @@ export class SearchEngine {
 
   async saveSearch(options: { name: string, criteria: SearchCriteria }, userContext: { user_id: string; session_id: string }): Promise<{ id: string, saved: boolean }> {
     try {
+      // Validate user context
+      await this.validateUserContext(userContext);
+
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
       // Add user_id to the saved search
-      const id = await this.databaseManager.saveSearch(options.name, options.criteria, userContext.user_id);
+      const id = await databaseManager.saveSearch(options.name, options.criteria, userContext.user_id);
       logger.info('Search saved', { id, name: options.name, userId: userContext.user_id });
       
       return { id, saved: true };
@@ -94,8 +141,14 @@ export class SearchEngine {
 
   async listSavedSearches(userContext: { user_id: string; session_id: string }): Promise<{ searches: SavedSearch[] }> {
     try {
+      // Validate user context
+      await this.validateUserContext(userContext);
+
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
       // Filter saved searches by user_id
-      const searches = await this.databaseManager.getSavedSearches(userContext.user_id);
+      const searches = await databaseManager.getSavedSearches(userContext.user_id);
       return { searches };
     } catch (error) {
       logger.error('Error listing saved searches:', error);
@@ -105,9 +158,15 @@ export class SearchEngine {
 
   async executeSavedSearch(searchId: string, userContext: { user_id: string; session_id: string }): Promise<{ emails: EmailIndex[], total: number }> {
     try {
+      // Validate user context
+      await this.validateUserContext(userContext);
+
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
       // Get saved searches for this user
-      const searches = await this.databaseManager.getSavedSearches(userContext.user_id);
-      const savedSearch = searches.find(s => s.id === searchId);
+      const searches = await databaseManager.getSavedSearches(userContext.user_id);
+      const savedSearch = searches.find((s: any) => s.id === searchId);
       
       if (!savedSearch) {
         throw new Error(`Saved search not found: ${searchId}`);

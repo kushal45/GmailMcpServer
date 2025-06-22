@@ -4,6 +4,7 @@ import {
   EmailIndex,
   DeleteOptions,
   BasicDeletionOptions,
+  PriorityCategory,
 } from "../types/index.js";
 import { logger } from "../utils/logger.js";
 import { CleanupPolicy } from "../types/index.js";
@@ -87,9 +88,7 @@ export class DeleteManager {
       Object.assign(criteria, options.searchCriteria);
     }
 
-    if (options.category) {
-      criteria.category = options.category;
-    }
+    
 
     if (options.year) {
       criteria.year = options.year;
@@ -114,17 +113,19 @@ export class DeleteManager {
     } else {
       criteria.orderDirection = options.orderDirection;
     }
+    if(!options.category){
+        criteria.categories = [PriorityCategory.LOW,PriorityCategory.MEDIUM];
+    }
+    
+    if(options.category){
+       criteria.categories = [options.category];
+    }
 
     if(options?.maxCount){
       criteria.limit = options.maxCount;
     }
 
     const emails = await this.databaseManager.searchEmails(criteria);
-
-    // Additional safety check - don't delete high priority emails unless explicitly specified
-    if (!options.category || options.category !== "high") {
-      return emails.filter((e) => e.category !== "high");
-    }
 
     return emails;
   }
