@@ -37,7 +37,7 @@ export class EmailFetcher {
     
     try {
       // Step 1: Query local cache DB for email metadata
-      const cacheKey = this.generateCacheKey(options);
+      const cacheKey = this.generateCacheKey(options, userId);
       const cachedResult = this.cacheManager.get<{
         emails: EmailIndex[];
         total: number;
@@ -86,7 +86,7 @@ export class EmailFetcher {
       
       if (needsSync) {
         // Step 4: Apply incremental synchronization logic
-        await this.synchronizeWithGmail(options);
+        await this.synchronizeWithGmail(options, userId);
         
         // Step 5: Re-query database after synchronization
         const refreshedEmails = await this.databaseManager.searchEmails(searchCriteria);
@@ -97,7 +97,7 @@ export class EmailFetcher {
           emails: refreshedEmails,
           total: refreshedTotal,
           timestamp: Date.now()
-        });
+        }, userId);
         
         logger.info(`Returning ${refreshedEmails.length} emails after synchronization`);
         return {
@@ -111,7 +111,7 @@ export class EmailFetcher {
         emails,
         total,
         timestamp: Date.now()
-      });
+      }, userId);
       
       logger.info(`Returning ${emails.length} emails from database`);
       return { emails, total };
@@ -150,12 +150,13 @@ export class EmailFetcher {
   /**
    * Synchronize with Gmail API to fetch missing or newer emails
    */
-  private async synchronizeWithGmail(options: ListEmailsOptions): Promise<void> {
+  private async synchronizeWithGmail(options: ListEmailsOptions, userId?: string): Promise<void> {
     logger.info('Synchronizing with Gmail API');
     
     try {
-      // Get Gmail client
-      const gmailClient = await this.authManager.getGmailClient();
+      // Get Gmail client with user context
+      const sessionId = await this.authManager.getSessionId(userId);
+      const gmailClient = await this.authManager.getGmailClient(sessionId);
       if (!gmailClient || !gmailClient.users || !gmailClient.users.messages) {
         throw new Error('Invalid Gmail client or missing messages API');
       }
@@ -214,8 +215,8 @@ export class EmailFetcher {
           // Convert to EmailIndex format
           const emailIndex = this.convertToEmailIndex(fullMessage.data);
           
-          // Save to database
-          await this.databaseManager.upsertEmailIndex(emailIndex);
+          // Save to database with user context
+          await this.databaseManager.upsertEmailIndex(emailIndex, userId);
         } catch (error) {
           // Log error but continue processing other messages
           logger.error(`Error processing message ${message?.id || 'unknown'}:`, error);
@@ -360,9 +361,9 @@ export class EmailFetcher {
   }
 
   /**
-   * Generate cache key based on options
+   * Generate cache key based on options and user context
    */
-  private generateCacheKey(options: ListEmailsOptions): string {
+  private generateCacheKey(options: ListEmailsOptions, userId?: string): string {
     // Create a normalized version of options for consistent cache keys
     const normalizedOptions = {
       category: options.category,
@@ -373,7 +374,8 @@ export class EmailFetcher {
       labels: options.labels,
       query: options.query,
       limit: options.limit,
-      offset: options.offset
+      offset: options.offset,
+      userId: userId || 'default' // 🔧 FIX: Include userId in cache key to prevent contamination
     };
     
     return `list_emails_${JSON.stringify(normalizedOptions)}`;

@@ -810,8 +810,8 @@ export class DatabaseManager {
 
   // Email index methods
   async upsertEmailIndex(email: EmailIndex, userId?: string): Promise<void> {
-    // Use the provided userId or fall back to the instance userId
-    const ownerUserId = userId || this.userId;
+    // Use the provided userId, or fall back to email.user_id, or finally instance userId
+    const ownerUserId = userId || email.user_id || this.userId;
     
     const sql = `
       INSERT OR REPLACE INTO email_index (
@@ -874,6 +874,7 @@ export class DatabaseManager {
 
   async bulkUpsertEmailIndex(emails: EmailIndex[], userId?: string): Promise<void> {
     // Use the provided userId or fall back to the instance userId
+    // Note: For bulk operations, we use the provided userId for all emails
     const ownerUserId = userId || this.userId;
     
     const sql = `
@@ -929,8 +930,8 @@ export class DatabaseManager {
       // Analysis Metadata
       email?.analysisTimestamp?.getTime() || null,
       email?.analysisVersion || null,
-      // User ID for multi-user support
-      ownerUserId || null,
+      // User ID for multi-user support - use email's user_id if available
+      email.user_id || ownerUserId || null,
     ]);
     await this.run(sql, paramSets);
   }

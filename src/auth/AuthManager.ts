@@ -752,6 +752,30 @@ export class AuthManager {
   }
 
   /**
+   * fetch sessionId from userId 
+   */
+  getSessionId(userId?: string): string {
+    if (!this.multiUserMode) {
+      throw new Error('Not in multi-user mode');
+    }
+
+    if (!this.userManager) {
+      throw new Error('UserManager not initialized');
+    }
+
+    if(!userId) {
+      throw new Error('User ID required');
+    }
+
+    const session = this.userManager.getUserSessions(userId)[0];
+    if (!session || !session.isValid()) {
+      throw new Error('Invalid or expired session');
+    }
+
+    return session.getSessionData().sessionId;
+  }
+
+  /**
    * Authenticate a user via OAuth
    * @param email User email
    * @param displayName Optional display name
