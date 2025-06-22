@@ -135,5 +135,15 @@ export const ParameterTypes = {
       max: { type: 'number', description: 'Maximum size in bytes' }
     },
     description: 'Filter by size range'
+  }),
+
+  userContext: (): ToolParameter => ({
+    type: 'object',
+    description: 'User context for access control',
+    properties: {
+      user_id: { type: 'string', description: 'ID of the user making the request' },
+      session_id: { type: 'string', description: 'Session ID of the user making the request' }
+    },
+    required: ['user_id', 'session_id']
   })
 };

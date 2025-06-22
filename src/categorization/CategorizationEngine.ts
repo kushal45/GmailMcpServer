@@ -140,12 +140,12 @@ export class CategorizationEngine {
   /**
    * Main method to categorize emails based on configured rules and analyzers
    */
-  async categorizeEmails(options: CategorizeOptions): Promise<EnhancedCategorizationResult> {
-    logger.info('Starting email categorization', options);
+  async categorizeEmails(options: CategorizeOptions, userContext?: { user_id: string; session_id: string }): Promise<EnhancedCategorizationResult> {
+    logger.info('Starting email categorization', { ...options, userId: userContext?.user_id });
     
     try {
-      // Get all emails that need categorization
-      const emails = await this.getEmailsForCategorization(options);
+      // Get all emails that need categorization with user context
+      const emails = await this.getEmailsForCategorization(options, userContext);
       
       let processed = 0;
       const categories = { high: 0, medium: 0, low: 0 };
@@ -163,7 +163,7 @@ export class CategorizationEngine {
         email.category = category;
         
         // Update database
-        await this.databaseManager.upsertEmailIndex(email);
+        await this.databaseManager.upsertEmailIndex(email, userContext?.user_id);
         
         // Collect the categorized email with all analyzer results
         categorizedEmails.push({ ...email });
@@ -594,30 +594,38 @@ export class CategorizationEngine {
     };
   }
 
-  private async getEmailsForCategorization(options: CategorizeOptions): Promise<EmailIndex[]> {
+  private async getEmailsForCategorization(options: CategorizeOptions, userContext?: { user_id: string; session_id: string }): Promise<EmailIndex[]> {
+    // Use user_id from options or from userContext
+    const userId = options.user_id || userContext?.user_id || this.databaseManager.getUserId();
+    
     if (options.forceRefresh) {
-      // Get all emails
-      return await this.databaseManager.searchEmails({
-        year: options.year
-      });
-    } else {
-      // Get only uncategorized emails (category IS NULL)
+      // Get all emails for this user
       return await this.databaseManager.searchEmails({
         year: options.year,
-        category: null
+        user_id: userId
+      });
+    } else {
+      // Get only uncategorized emails (category IS NULL) for this user
+      return await this.databaseManager.searchEmails({
+        year: options.year,
+        category: null,
+        user_id: userId
       });
     }
   }
 
-  async getStatistics(options: { groupBy: string, includeArchived: boolean }): Promise<EmailStatistics> {
-    const cacheKey = CacheManager.categoryStatsKey();
+  async getStatistics(options: { groupBy: string, includeArchived: boolean }, userContext?: { user_id: string; session_id: string }): Promise<EmailStatistics> {
+    // Use a user-specific cache key
+    const userId = userContext?.user_id || this.databaseManager.getUserId() || 'default';
+    const cacheKey = CacheManager.categoryStatsKey(userId);
     const cached = this.cacheManager.get<EmailStatistics>(cacheKey);
     
     if (cached) {
       return cached;
     }
     
-    const stats = await this.databaseManager.getEmailStatistics(options.includeArchived);
+    // Pass userId to get user-specific statistics
+    const stats = await this.databaseManager.getEmailStatistics(options.includeArchived, userId);
     
     // Transform database stats to EmailStatistics format
     const result: EmailStatistics = {
@@ -663,7 +671,7 @@ export class CategorizationEngine {
     }
     
     // Cache the result
-    this.cacheManager.set(cacheKey, result, 300); // Cache for 5 minutes
+    this.cacheManager.set(cacheKey, result,userId, 300); // Cache for 5 minutes
     
     return result;
   }
@@ -764,7 +772,12 @@ export class CategorizationEngine {
   /**
    * Perform a single email analysis without database updates (useful for testing)
    */
-  public async analyzeEmail(email: EmailIndex): Promise<CombinedAnalysisResult> {
+  public async analyzeEmail(email: EmailIndex, userContext?: { user_id: string; session_id: string }): Promise<CombinedAnalysisResult> {
+    // Ensure the email object has a user_id if provided in context
+    if (userContext?.user_id && !email.user_id) {
+      email.user_id = userContext.user_id;
+    }
+    
     const context = this.createAnalysisContext(email);
     return this.orchestrateAnalysis(context);
   }

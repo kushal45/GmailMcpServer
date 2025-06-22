@@ -31,7 +31,10 @@ export class JobStatusStore {
   static getInstance(): JobStatusStore {
     if (!this.instance) {
       // Ensure DatabaseManager singleton exists first
-      DatabaseManager.validateSingletonIntegrity();
+      // Check if the singleton instance exists
+      if (!DatabaseManager.getInstance()) {
+        throw new Error('DatabaseManager: No singleton instance exists. Call getInstance() first.');
+      }
       this.instance = new JobStatusStore();
       logger.debug(`JobStatusStore singleton created with ID: ${this.instanceId}`, {
         timestamp: new Date().toISOString(),
@@ -46,7 +49,9 @@ export class JobStatusStore {
       throw new Error('JobStatusStore: No singleton instance exists. Call getInstance() first.');
     }
     // Also validate the underlying DatabaseManager
-    DatabaseManager.validateSingletonIntegrity();
+    if (!DatabaseManager.getInstance()) {
+      throw new Error('DatabaseManager: No singleton instance exists. Call getInstance() first.');
+    }
     logger.debug(`JobStatusStore singleton validation passed. Instance ID: ${this.instanceId}`);
   }
 
@@ -66,7 +71,14 @@ export class JobStatusStore {
     }
   }
 
-  async createJob(job_type: string, request_params: any): Promise<string> {
+  /**
+   * Create a new job with user context for multi-user support
+   * @param job_type Type of job to create
+   * @param request_params Parameters for the job
+   * @param user_id Optional user ID to associate with the job
+   * @returns Job ID of the created job
+   */
+  async createJob(job_type: string, request_params: any, user_id?: string): Promise<string> {
     this.validateDatabaseInitialization();
     
     const job_id = `J${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -77,10 +89,11 @@ export class JobStatusStore {
         job_type,
         status: JobStatus.PENDING,
         request_params,
-        created_at: new Date()
+        created_at: new Date(),
+        user_id // Include user_id in the job data
       });
       
-      logger.debug(`Created new job: ${job_id} of type: ${job_type} (JobStatusStore ID: ${this.getInstanceId()})`);
+      logger.debug(`Created new job: ${job_id} of type: ${job_type} for user: ${user_id || 'system'} (JobStatusStore ID: ${this.getInstanceId()})`);
       return job_id;
     } catch (error) {
       logger.error(`Failed to create job: ${error}`);
@@ -88,12 +101,25 @@ export class JobStatusStore {
     }
   }
 
-  async getJobStatus(job_id: string): Promise<Job | null> {
+  /**
+   * Get job status with user isolation
+   * @param job_id Job ID to retrieve
+   * @param user_id Optional user ID for permission check
+   * @returns Job data or null if not found
+   */
+  async getJobStatus(job_id: string, user_id?: string): Promise<Job | null> {
     this.validateDatabaseInitialization();
     
     try {
       logger.debug(`Getting job status for ${job_id} (JobStatusStore ID: ${this.getInstanceId()}, DatabaseManager ID: ${this.dbManager.getInstanceId()})`);
       const job = await this.dbManager.getJob(job_id);
+      
+      // For multi-user support: check if job belongs to the requesting user
+      if (job && user_id && job.user_id && job.user_id !== user_id) {
+        logger.warn(`User ${user_id} attempted to access job ${job_id} belonging to user ${job.user_id}`);
+        return null; // Don't expose jobs belonging to other users
+      }
+      
       return job;
     } catch (error) {
       logger.error(`Failed to get job status for ${job_id}: ${error}`);
@@ -101,10 +127,23 @@ export class JobStatusStore {
     }
   }
 
-  async cancelJob(job_id: string): Promise<void> {
+  /**
+   * Cancel a job with user permission check
+   * @param job_id Job ID to cancel
+   * @param user_id Optional user ID for permission check
+   */
+  async cancelJob(job_id: string, user_id?: string): Promise<void> {
     this.validateDatabaseInitialization();
 
     try {
+      // Check if the job belongs to the user if user_id is provided
+      if (user_id) {
+        const job = await this.dbManager.getJob(job_id);
+        if (job && job.user_id && job.user_id !== user_id) {
+          throw new Error(`User ${user_id} does not have permission to cancel job ${job_id}`);
+        }
+      }
+      
       await this.dbManager.updateJob(job_id, {
         status: JobStatus.CANCELLED
       });
@@ -142,11 +181,18 @@ export class JobStatusStore {
     }
   }
 
+  /**
+   * List jobs with user isolation
+   * @param filters Filters to apply to the job list
+   * @param user_id Optional user ID to filter jobs by owner
+   * @returns List of jobs matching the filters
+   */
   async listJobs(filters: {
     job_type?: string;
     status?: JobStatus;
     limit?: number;
     offset?: number;
+    user_id?: string; // Added user_id to filters
   } = {}): Promise<Job[]> {
     this.validateDatabaseInitialization();
     
@@ -158,10 +204,23 @@ export class JobStatusStore {
     }
   }
 
-  async deleteJob(job_id: string): Promise<void> {
+  /**
+   * Delete a job with user permission check
+   * @param job_id Job ID to delete
+   * @param user_id Optional user ID for permission check
+   */
+  async deleteJob(job_id: string, user_id?: string): Promise<void> {
     this.validateDatabaseInitialization();
     
     try {
+      // Check if the job belongs to the user if user_id is provided
+      if (user_id) {
+        const job = await this.dbManager.getJob(job_id);
+        if (job && job.user_id && job.user_id !== user_id) {
+          throw new Error(`User ${user_id} does not have permission to delete job ${job_id}`);
+        }
+      }
+      
       await this.dbManager.deleteJob(job_id);
       logger.debug(`Deleted job ${job_id} (JobStatusStore ID: ${this.getInstanceId()})`);
     } catch (error) {
@@ -170,15 +229,41 @@ export class JobStatusStore {
     }
   }
 
-  async cleanupOldJobs(olderThanDays: number = 30): Promise<number> {
+  /**
+   * Clean up old jobs with user isolation option
+   * @param olderThanDays Number of days after which jobs should be cleaned up
+   * @param user_id Optional user ID to clean up jobs for a specific user only
+   * @returns Number of deleted jobs
+   */
+  async cleanupOldJobs(olderThanDays: number = 30, user_id?: string): Promise<number> {
     this.validateDatabaseInitialization();
     
     try {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
       
-      const deletedCount = await this.dbManager.deleteJobsOlderThan(cutoffDate);
-      logger.debug(`Cleaned up ${deletedCount} jobs older than ${olderThanDays} days (JobStatusStore ID: ${this.getInstanceId()})`);
+      let deletedCount = 0;
+      
+      if (user_id) {
+        // If user_id is provided, use a custom query to find and delete jobs for that user
+        // First, get all job IDs that match our criteria
+        const timestamp = Math.floor(cutoffDate.getTime() / 1000);
+        const sql = "SELECT job_id FROM job_statuses WHERE created_at < ? AND user_id = ?";
+        
+        // Use DatabaseManager's query method to get the jobs
+        const jobs = await this.dbManager.queryAll<{job_id: string}>(sql, [timestamp, user_id]);
+        
+        // Delete each job individually
+        for (const job of jobs) {
+          await this.dbManager.deleteJob(job.job_id);
+          deletedCount++;
+        }
+      } else {
+        // For backward compatibility, if no user_id is specified, use the existing method
+        deletedCount = await this.dbManager.deleteJobsOlderThan(cutoffDate);
+      }
+      
+      logger.debug(`Cleaned up ${deletedCount} jobs older than ${olderThanDays} days${user_id ? ` for user ${user_id}` : ''} (JobStatusStore ID: ${this.getInstanceId()})`);
       
       return deletedCount;
     } catch (error) {

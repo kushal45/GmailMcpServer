@@ -1,7 +1,7 @@
 import { DatabaseManager } from '../database/DatabaseManager.js';
 import { AuthManager } from '../auth/AuthManager.js';
 import { CacheManager } from '../cache/CacheManager.js';
-import { EmailIndex, ListEmailsOptions, PriorityCategory, Header} from '../types/index.js';
+import { EmailIndex, ListEmailsOptions, PriorityCategory, Header, SearchCriteria, SearchEngineCriteria} from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 export class EmailFetcher {
@@ -29,7 +29,7 @@ export class EmailFetcher {
    * List emails based on provided filters
    * Implements the flow from the sequence diagram
    */
-  async listEmails(options: ListEmailsOptions): Promise<{
+  async listEmails(options: ListEmailsOptions,userId?:string): Promise<{
     emails: EmailIndex[];
     total: number;
   }> {
@@ -42,7 +42,7 @@ export class EmailFetcher {
         emails: EmailIndex[];
         total: number;
         timestamp: number;
-      }>(cacheKey);
+      }>(cacheKey,userId);
       
       // If we have fresh cached results, return them
       if (cachedResult && Date.now() - cachedResult.timestamp < this.CACHE_TTL * 1000) {
@@ -54,13 +54,14 @@ export class EmailFetcher {
       }
       
       // Step 2: Query database for matching emails
-      const searchCriteria: any = {
+      const searchCriteria: SearchEngineCriteria = {
         category: options.category,
         year: options.year,
         sizeRange: options.sizeRange,
         archived: options.archived,
         limit: options.limit,
-        offset: options.offset
+        offset: options.offset,
+        user_id: userId
       };
       
       // Add additional search criteria if provided
@@ -96,7 +97,7 @@ export class EmailFetcher {
           emails: refreshedEmails,
           total: refreshedTotal,
           timestamp: Date.now()
-        }, this.CACHE_TTL);
+        });
         
         logger.info(`Returning ${refreshedEmails.length} emails after synchronization`);
         return {
@@ -110,7 +111,7 @@ export class EmailFetcher {
         emails,
         total,
         timestamp: Date.now()
-      }, this.CACHE_TTL);
+      });
       
       logger.info(`Returning ${emails.length} emails from database`);
       return { emails, total };
@@ -187,7 +188,7 @@ export class EmailFetcher {
       if (messages.length === 0) {
         logger.info('No new messages to synchronize');
         // Still update the sync time to prevent repeated empty calls
-        this.cacheManager.set('last_gmail_sync', Date.now(), this.CACHE_TTL * 24);
+        this.cacheManager.set('last_gmail_sync', Date.now());
         return;
       }
       
@@ -222,7 +223,7 @@ export class EmailFetcher {
       }
       
       // Update last sync time
-      this.cacheManager.set('last_gmail_sync', Date.now(), this.CACHE_TTL * 24); // 24 hours
+      this.cacheManager.set('last_gmail_sync', Date.now()); // 24 hours
       
       logger.info('Synchronization completed');
     } catch (error) {

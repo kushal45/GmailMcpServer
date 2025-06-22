@@ -12,14 +12,15 @@ export class SearchEngine {
     this.emailFetcher = emailFetcher;
   }
 
-  async search(criteria: SearchEngineCriteria): Promise<{ emails: EmailIndex[], total: number }> {
-    logger.info('Searching emails', { criteria });
+  async search(criteria: SearchEngineCriteria, userContext: { user_id: string; session_id: string }): Promise<{ emails: EmailIndex[], total: number }> {
+    logger.info('Searching emails', { criteria, userId: userContext.user_id });
 
     try {
-      // First search in local database
+      // First search in local database with user context
       let dbResults = await this.databaseManager.searchEmails({
         ...criteria,
-        limit: criteria.limit || 50
+        limit: criteria.limit || 50,
+        user_id: userContext.user_id // Filter by user_id
       });
 
       // Filter by labels if specified
@@ -78,10 +79,11 @@ export class SearchEngine {
     }
   }
 
-  async saveSearch(options: { name: string, criteria: SearchCriteria }): Promise<{ id: string, saved: boolean }> {
+  async saveSearch(options: { name: string, criteria: SearchCriteria }, userContext: { user_id: string; session_id: string }): Promise<{ id: string, saved: boolean }> {
     try {
-      const id = await this.databaseManager.saveSearch(options.name, options.criteria);
-      logger.info('Search saved', { id, name: options.name });
+      // Add user_id to the saved search
+      const id = await this.databaseManager.saveSearch(options.name, options.criteria, userContext.user_id);
+      logger.info('Search saved', { id, name: options.name, userId: userContext.user_id });
       
       return { id, saved: true };
     } catch (error) {
@@ -90,9 +92,10 @@ export class SearchEngine {
     }
   }
 
-  async listSavedSearches(): Promise<{ searches: SavedSearch[] }> {
+  async listSavedSearches(userContext: { user_id: string; session_id: string }): Promise<{ searches: SavedSearch[] }> {
     try {
-      const searches = await this.databaseManager.getSavedSearches();
+      // Filter saved searches by user_id
+      const searches = await this.databaseManager.getSavedSearches(userContext.user_id);
       return { searches };
     } catch (error) {
       logger.error('Error listing saved searches:', error);
@@ -100,16 +103,22 @@ export class SearchEngine {
     }
   }
 
-  async executeSavedSearch(searchId: string): Promise<{ emails: EmailIndex[], total: number }> {
+  async executeSavedSearch(searchId: string, userContext: { user_id: string; session_id: string }): Promise<{ emails: EmailIndex[], total: number }> {
     try {
-      const searches = await this.databaseManager.getSavedSearches();
+      // Get saved searches for this user
+      const searches = await this.databaseManager.getSavedSearches(userContext.user_id);
       const savedSearch = searches.find(s => s.id === searchId);
       
       if (!savedSearch) {
         throw new Error(`Saved search not found: ${searchId}`);
       }
+      
+      // Verify ownership of the saved search
+      if (savedSearch.user_id && savedSearch.user_id !== userContext.user_id) {
+        throw new Error('Access denied: You do not have permission to access this saved search');
+      }
 
-      return await this.search(savedSearch.criteria);
+      return await this.search(savedSearch.criteria, userContext);
     } catch (error) {
       logger.error('Error executing saved search:', error);
       throw error;

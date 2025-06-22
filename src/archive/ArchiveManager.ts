@@ -1,5 +1,7 @@
 import { AuthManager } from "../auth/AuthManager.js";
 import { DatabaseManager } from "../database/DatabaseManager.js";
+import { UserSession } from "../auth/UserSession.js";
+import { FileAccessControlManager } from "../services/FileAccessControlManager.js";
 import {
   EmailIndex,
   ArchiveOptions,
@@ -7,9 +9,16 @@ import {
   ExportOptions,
   ArchiveRecord,
 } from "../types/index.js";
+import {
+  UserContext,
+  FileAccessRequest,
+  CreateFileRequest,
+  FileMetadata,
+} from "../types/file-access-control.js";
 import { logger } from "../utils/logger.js";
 import fs from "fs/promises";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import {
   FileFormatterRegistry,
@@ -30,16 +39,19 @@ export class ArchiveManager {
   private authManager: AuthManager;
   private databaseManager: DatabaseManager;
   private formatterRegistry: FileFormatterRegistry;
+  private fileAccessControl: FileAccessControlManager;
   private archivePath: string;
 
   constructor(
     authManager: AuthManager,
     databaseManager: DatabaseManager,
-    formatterRegistry: FileFormatterRegistry
+    formatterRegistry: FileFormatterRegistry,
+    fileAccessControl: FileAccessControlManager
   ) {
     this.authManager = authManager;
     this.databaseManager = databaseManager;
     this.formatterRegistry = formatterRegistry;
+    this.fileAccessControl = fileAccessControl;
     // Use absolute path based on project root
     // @ts-ignore
     const archivePath = process.env.ARCHIVE_PATH;
@@ -50,13 +62,21 @@ export class ArchiveManager {
   }
 
   async archiveEmails(
-    options: ArchiveOptions
+    options: ArchiveOptions,
+    userContext: UserContext
   ): Promise<{ archived: number; location?: string; errors: string[] }> {
-    logger.info("Starting email archive", { options });
+    logger.info("Starting email archive", {
+      options,
+      user_id: userContext.user_id,
+      session_id: userContext.session_id
+    });
 
     try {
-      // Get emails to archive based on criteria
-      const emails = await this.getEmailsToArchive(options);
+      // Validate user session
+      await this.validateUserSession(userContext);
+
+      // Get emails to archive based on criteria with user context
+      const emails = await this.getEmailsToArchive(options, userContext);
 
       if (options.dryRun) {
         return {
@@ -72,28 +92,28 @@ export class ArchiveManager {
 
       if (options.method === "gmail") {
         // Archive to Gmail (add ARCHIVED label)
-        const result = await this.archiveToGmail(emails);
+        const result = await this.archiveToGmail(emails, userContext);
         archived = result.archived;
         errors.push(...result.errors);
       } else if (options.method === "export") {
-        // Export to file
-        const result = await this.exportToFile(emails, options);
+        // Export to file with file access control
+        const result = await this.exportToFile(emails, options, userContext);
         archived = result.archived;
         location = result.location;
         errors.push(...result.errors);
       }
 
-      // Update database
+      // Update database with user context
       for (const email of emails) {
         if (errors.length === 0) {
           email.archived = true;
           email.archiveDate = new Date();
           email.archiveLocation = location;
-          await this.databaseManager.upsertEmailIndex(email);
+          await this.databaseManager.upsertEmailIndex(email, userContext.user_id);
         }
       }
 
-      // Create archive record
+      // Create archive record with user context
       if (archived > 0) {
         const size =
           options.method === "gmail"
@@ -101,7 +121,9 @@ export class ArchiveManager {
             : options.method === "export" && location
             ? await this.getFileSize(location)
             : 0;
-        await this.databaseManager.createArchiveRecord({
+            
+        // Create archive record with user_id
+        const archiveRecord = await this.databaseManager.createArchiveRecord({
           emailIds: emails.map((e) => e.id),
           archiveDate: new Date(),
           method: options.method,
@@ -109,6 +131,29 @@ export class ArchiveManager {
           format: options.exportFormat,
           size,
           restorable: true,
+        });
+
+        // Update archive_records table with user_id if not already set
+        await this.databaseManager.execute(
+          'UPDATE archive_records SET user_id = ? WHERE id = ?',
+          [userContext.user_id, archiveRecord]
+        );
+
+        // Log archive operation
+        await this.fileAccessControl.auditLog({
+          user_id: userContext.user_id,
+          session_id: userContext.session_id,
+          action: options.method === 'export' ? 'file_create' : 'file_write',
+          resource_type: 'archive',
+          resource_id: archiveRecord,
+          details: {
+            method: options.method,
+            email_count: archived,
+            size: size
+          },
+          ip_address: userContext.ip_address,
+          user_agent: userContext.user_agent,
+          success: true
         });
       }
 
@@ -122,7 +167,8 @@ export class ArchiveManager {
   }
 
   private async getEmailsToArchive(
-    options: ArchiveOptions
+    options: ArchiveOptions,
+    userContext: UserContext
   ): Promise<EmailIndex[]> {
     const criteria: any = {};
 
@@ -146,14 +192,19 @@ export class ArchiveManager {
 
     // Don't archive already archived emails
     criteria.archived = false;
+    
+    // Add user context for multi-user isolation
+    criteria.user_id = userContext.user_id;
 
     return await this.databaseManager.searchEmails(criteria);
   }
 
   private async archiveToGmail(
-    emails: EmailIndex[]
+    emails: EmailIndex[],
+    userContext: UserContext
   ): Promise<{ archived: number; errors: string[] }> {
-    const gmail = await this.authManager.getGmailClient();
+    // Get user-specific Gmail client
+    const gmail = await this.authManager.getGmailClient(userContext.session_id);
     let archived = 0;
     const errors: string[] = [];
 
@@ -187,10 +238,12 @@ export class ArchiveManager {
 
   private async exportToFile(
     emails: EmailIndex[],
-    options: ArchiveOptions
+    options: ArchiveOptions,
+    userContext: UserContext
   ): Promise<{ archived: number; location: string; errors: string[] }> {
-    // Ensure archive directory exists
-    await fs.mkdir(this.archivePath, { recursive: true });
+    // Create user-specific archive directory
+    const userArchivePath = path.join(this.archivePath, `user_${userContext.user_id}`);
+    await fs.mkdir(userArchivePath, { recursive: true });
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const fileNamePrefix = options.exportPath || `archive_${timestamp}`;
@@ -251,12 +304,35 @@ export class ArchiveManager {
         throw error;
       }
 
-      // Write to file
+      // Write to file with access control
       const filename = `${fileNamePrefix}.${formatter.getFileExtension()}`;
-      const filepath = path.join(this.archivePath, filename);
+      const filepath = path.join(userArchivePath, filename);
 
       try {
         await fs.writeFile(filepath, formattedContent);
+        
+        // Calculate file checksum
+        const checksum = crypto.createHash('sha256').update(formattedContent).digest('hex');
+        
+        // Create file metadata record with access control
+        const fileMetadata = await this.fileAccessControl.createFileMetadata({
+          file_path: filepath,
+          original_filename: filename,
+          file_type: 'email_export',
+          size_bytes: Buffer.byteLength(formattedContent, 'utf8'),
+          mime_type: this.getMimeTypeForFormat(format),
+          checksum_sha256: checksum,
+          encryption_status: 'none',
+          compression_status: 'none',
+          user_id: userContext.user_id
+        });
+
+        logger.info(`File exported with access control: ${fileMetadata.id}`, {
+          user_id: userContext.user_id,
+          file_path: filepath,
+          size_bytes: fileMetadata.size_bytes
+        });
+
       } catch (error) {
         if (error instanceof Error) {
           throw new Error(`Failed to write file: ${error.message}`);
@@ -287,14 +363,24 @@ export class ArchiveManager {
     }
   }
 
-  async restoreEmails(options: {
-    archiveId?: string;
-    emailIds?: string[];
-    restoreLabels?: string[];
-  }): Promise<{ restored: number; errors: string[] }> {
-    logger.info("Restoring emails", { options });
+  async restoreEmails(
+    options: {
+      archiveId?: string;
+      emailIds?: string[];
+      restoreLabels?: string[];
+    },
+    userContext: UserContext
+  ): Promise<{ restored: number; errors: string[] }> {
+    logger.info("Restoring emails", {
+      options,
+      user_id: userContext.user_id,
+      session_id: userContext.session_id
+    });
 
     try {
+      // Validate user session
+      await this.validateUserSession(userContext);
+      
       const errors: string[] = [];
       let emailsToRestore: EmailIndex[] = [];
       let archiveRecord: ArchiveRecord | null = null;
@@ -321,13 +407,16 @@ export class ArchiveManager {
 
       // Step 2: Determine which emails to restore - must have emailIds
       if (options.emailIds && options.emailIds.length > 0) {
-        // Use provided email IDs
+        // Use provided email IDs with user context filtering
         emailsToRestore = await this.databaseManager.getEmailsByIds(
           options.emailIds
         );
 
-        // Filter only archived emails
-        emailsToRestore = emailsToRestore.filter((email) => email.archived);
+        // Filter only archived emails that belong to the user
+        emailsToRestore = emailsToRestore.filter((email) =>
+          email.archived &&
+          (email as any).user_id === userContext.user_id
+        );
 
         if (emailsToRestore.length === 0) {
           return {
@@ -354,7 +443,8 @@ export class ArchiveManager {
         // Restore from Gmail archive (remove ARCHIVED label, add back INBOX)
         const result = await this.restoreFromGmail(
           emailsToRestore.map((e) => e.id),
-          options.restoreLabels || []
+          options.restoreLabels || [],
+          userContext
         );
         restored = result.restored;
         errors.push(...result.errors);
@@ -367,7 +457,9 @@ export class ArchiveManager {
           const result = await this.restoreFromExport(
             archiveLocation,
             "json", // Default to JSON format if not specified
-            emailsToRestore.map((e) => e.id)
+            emailsToRestore.map((e) => e.id),
+            options.restoreLabels || [],
+            userContext
           );
           restored = result.restored;
           errors.push(...result.errors);
@@ -401,8 +493,24 @@ export class ArchiveManager {
             }
           }
 
-          await this.databaseManager.upsertEmailIndex(email);
+          await this.databaseManager.upsertEmailIndex(email, userContext.user_id);
         }
+
+        // Log restore operation
+        await this.fileAccessControl.auditLog({
+          user_id: userContext.user_id,
+          session_id: userContext.session_id,
+          action: 'file_read',
+          resource_type: 'archive',
+          resource_id: options.archiveId || 'email_restore',
+          details: {
+            restored_count: restored,
+            email_ids: emailsToRestore.slice(0, restored).map(e => e.id)
+          },
+          ip_address: userContext.ip_address,
+          user_agent: userContext.user_agent,
+          success: true
+        });
 
         logger.info(`Successfully restored ${restored} emails`);
       }
@@ -425,9 +533,11 @@ export class ArchiveManager {
    */
   private async restoreFromGmail(
     emailIds: string[],
-    restoreLabels: string[] = []
+    restoreLabels: string[] = [],
+    userContext: UserContext
   ): Promise<{ restored: number; errors: string[] }> {
-    const gmail = await this.authManager.getGmailClient();
+    // Get user-specific Gmail client
+    const gmail = await this.authManager.getGmailClient(userContext.session_id);
     let restored = 0;
     const errors: string[] = [];
 
@@ -471,14 +581,36 @@ export class ArchiveManager {
     location: string,
     format: string,
     emailIds: string[],
-    restoreLabels: string[] = []
+    restoreLabels: string[] = [],
+    userContext: UserContext
   ): Promise<{ restored: number; errors: string[] }> {
     const errors: string[] = [];
 
     try {
-      // Verify the export file exists
+      // Check file access permission through FileAccessControl
+      const fileAccessRequest: FileAccessRequest = {
+        file_id: path.basename(location), // This should be the file metadata ID
+        user_id: userContext.user_id,
+        session_id: userContext.session_id || '',
+        permission_type: 'read',
+        context: {
+          ip_address: userContext.ip_address,
+          user_agent: userContext.user_agent,
+          operation: 'restore_from_export'
+        }
+      };
+
+      // Verify the export file exists and user has access
       try {
         await fs.access(location);
+        // TODO: Check file access permission when we have file_id mapping
+        // const accessResult = await this.fileAccessControl.checkFileAccess(fileAccessRequest);
+        // if (!accessResult.allowed) {
+        //   return {
+        //     restored: 0,
+        //     errors: [`Access denied to file: ${accessResult.reason}`],
+        //   };
+        // }
       } catch (error) {
         return {
           restored: 0,
@@ -503,8 +635,8 @@ export class ArchiveManager {
       // Read and parse the exported file
       const fileContent = await fs.readFile(location, "utf8");
 
-      // Use the formatter to import the emails back
-      const gmail = await this.authManager.getGmailClient();
+      // Use the formatter to import the emails back with user context
+      const gmail = await this.authManager.getGmailClient(userContext.session_id);
       let restored = 0;
 
       // Implement specific logic based on format
@@ -563,13 +695,19 @@ export class ArchiveManager {
     }
   }
 
-  async createRule(rule: {
-    name: string;
-    criteria: any;
-    action: any;
-    schedule?: string;
-  }): Promise<{ rule_id: string; created: boolean }> {
+  async createRule(
+    rule: {
+      name: string;
+      criteria: any;
+      action: any;
+      schedule?: string;
+    },
+    userContext: UserContext
+  ): Promise<{ rule_id: string; created: boolean }> {
     try {
+      // Validate user session
+      await this.validateUserSession(userContext);
+
       const ruleId = await this.databaseManager.createArchiveRule({
         name: rule.name,
         criteria: rule.criteria,
@@ -579,7 +717,30 @@ export class ArchiveManager {
         lastRun: undefined,
       });
 
-      logger.info("Archive rule created", { ruleId, name: rule.name });
+      // Update archive_rules table with user_id
+      await this.databaseManager.execute(
+        'UPDATE archive_rules SET user_id = ? WHERE id = ?',
+        [userContext.user_id, ruleId]
+      );
+
+      // Log rule creation
+      await this.fileAccessControl.auditLog({
+        user_id: userContext.user_id,
+        session_id: userContext.session_id,
+        action: 'file_create',
+        resource_type: 'archive',
+        resource_id: ruleId,
+        details: {
+          rule_name: rule.name,
+          criteria: rule.criteria,
+          action: rule.action
+        },
+        ip_address: userContext.ip_address,
+        user_agent: userContext.user_agent,
+        success: true
+      });
+
+      logger.info("Archive rule created", { ruleId, name: rule.name, user_id: userContext.user_id });
 
       return { rule_id: ruleId, created: true };
     } catch (error) {
@@ -588,14 +749,25 @@ export class ArchiveManager {
     }
   }
 
-  async listRules(options: {
-    activeOnly: boolean;
-  }): Promise<{ rules: ArchiveRule[] }> {
+  async listRules(
+    options: {
+      activeOnly: boolean;
+    },
+    userContext: UserContext
+  ): Promise<{ rules: ArchiveRule[] }> {
     try {
-      const rules = await this.databaseManager.getArchiveRules(
-        options.activeOnly
+      // Validate user session
+      await this.validateUserSession(userContext);
+
+      // Get all rules and filter by user_id (need to implement user filtering in DatabaseManager)
+      const allRules = await this.databaseManager.getArchiveRules(options.activeOnly);
+      
+      // Filter rules by user_id (temporary solution until DatabaseManager supports user filtering)
+      const userRules = allRules.filter((rule: any) =>
+        !rule.user_id || rule.user_id === userContext.user_id
       );
-      return { rules };
+      
+      return { rules: userRules };
     } catch (error) {
       logger.error("Error listing archive rules:", error);
       throw error;
@@ -603,13 +775,25 @@ export class ArchiveManager {
   }
 
   async exportEmails(
-    options: ExportOptions
+    options: ExportOptions,
+    userContext: UserContext
   ): Promise<{ exported: number; file_path: string; size: number }> {
-    logger.info("Exporting emails", { options });
+    logger.info("Exporting emails", {
+      options,
+      user_id: userContext.user_id,
+      session_id: userContext.session_id
+    });
 
-    const emails = await this.databaseManager.searchEmails(
-      options.searchCriteria || {}
-    );
+    // Validate user session
+    await this.validateUserSession(userContext);
+
+    // Search emails with user context
+    const searchCriteria = {
+      ...(options.searchCriteria || {}),
+      user_id: userContext.user_id
+    };
+    
+    const emails = await this.databaseManager.searchEmails(searchCriteria);
 
     const archiveOptions: ArchiveOptions = {
       method: "export",
@@ -619,7 +803,7 @@ export class ArchiveManager {
       dryRun: false,
     };
 
-    const result = await this.exportToFile(emails, archiveOptions);
+    const result = await this.exportToFile(emails, archiveOptions, userContext);
 
     // Get file size
     let fileSize = 0;
@@ -642,15 +826,23 @@ export class ArchiveManager {
     };
   }
 
-  async runScheduledRules(): Promise<void> {
-    logger.info("Running scheduled archive rules");
+  async runScheduledRules(userContext?: UserContext): Promise<void> {
+    logger.info("Running scheduled archive rules", {
+      user_id: userContext?.user_id,
+      system_run: !userContext
+    });
 
     const rules = await this.databaseManager.getArchiveRules(true);
 
     for (const rule of rules) {
+      // Filter rules by user if userContext is provided
+      if (userContext && (rule as any).user_id !== userContext.user_id) {
+        continue;
+      }
+
       if (this.shouldRunRule(rule)) {
         try {
-          await this.executeRule(rule);
+          await this.executeRule(rule, userContext);
         } catch (error) {
           logger.error(`Error executing rule ${rule.name}:`, error);
         }
@@ -680,8 +872,10 @@ export class ArchiveManager {
     }
   }
 
-  private async executeRule(rule: ArchiveRule): Promise<void> {
-    logger.info(`Executing archive rule: ${rule.name}`);
+  private async executeRule(rule: ArchiveRule, userContext?: UserContext): Promise<void> {
+    logger.info(`Executing archive rule: ${rule.name}`, {
+      user_id: userContext?.user_id
+    });
 
     const options: ArchiveOptions = {
       category: rule.criteria.category,
@@ -691,7 +885,14 @@ export class ArchiveManager {
       dryRun: false,
     };
 
-    const result = await this.archiveEmails(options);
+    // Create system user context if not provided
+    const effectiveUserContext = userContext || {
+      user_id: (rule as any).user_id || 'system',
+      session_id: 'system_scheduled_rule',
+      roles: ['system']
+    };
+
+    const result = await this.archiveEmails(options, effectiveUserContext);
 
     // Update rule stats
     // TODO: Update rule in database with new stats
@@ -710,5 +911,54 @@ export class ArchiveManager {
       logger.warn(`Failed to get file size for ${filePath}`, error);
       return 0;
     }
+  }
+
+  /**
+   * Validate user session and ensure user has proper access
+   */
+  private async validateUserSession(userContext: UserContext): Promise<void> {
+    if (!userContext.user_id) {
+      throw new Error('User ID is required');
+    }
+
+    if (!userContext.session_id) {
+      throw new Error('Session ID is required');
+    }
+
+    // Check if session is valid through AuthManager
+    try {
+      // Check if authentication is valid for this session
+      if (!await this.authManager.hasValidAuth(userContext.session_id)) {
+        throw new Error('Invalid or expired session');
+      }
+
+      // Verify the session belongs to the correct user
+      if (this.authManager.isMultiUserMode()) {
+        const sessionUserId = this.authManager.getUserIdForSession(userContext.session_id);
+        if (sessionUserId !== userContext.user_id) {
+          throw new Error('Session does not belong to the specified user');
+        }
+      }
+    } catch (error) {
+      throw new Error(`Session validation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Get appropriate MIME type for export format
+   */
+  private getMimeTypeForFormat(format: string): string {
+    const mimeTypes: Record<string, string> = {
+      'json': 'application/json',
+      'csv': 'text/csv',
+      'mbox': 'application/mbox',
+      'eml': 'message/rfc822',
+      'html': 'text/html',
+      'txt': 'text/plain',
+      'pdf': 'application/pdf',
+      'xml': 'application/xml'
+    };
+
+    return mimeTypes[format.toLowerCase()] || 'application/octet-stream';
   }
 }

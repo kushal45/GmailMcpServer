@@ -55,6 +55,7 @@ export interface EmailIndex {
   archived?: boolean;
   archiveDate?: Date;
   archiveLocation?: string;
+  user_id?: string;  // Added for multi-user support
   
   // Importance Analysis Results
   importanceScore?: number;
@@ -99,6 +100,7 @@ export interface SearchCriteria {
 
 export interface SearchEngineCriteria extends SearchCriteria {
   limit?: number;
+  user_id?: string;  // Added for multi-user support
 }
 
 export interface ArchiveRule {
@@ -142,6 +144,7 @@ export interface SavedSearch {
   created: Date;
   lastUsed: Date;
   resultCount?: number;
+  user_id: string;  // Added for multi-user support
 }
 
 export interface CategoryStats {
@@ -196,6 +199,7 @@ export interface ListEmailsOptions {
 export interface CategorizeOptions {
   forceRefresh: boolean;
   year?: number;
+  user_id?: string;  // Added for multi-user support
 }
 
 export interface ArchiveOptions {
@@ -223,6 +227,7 @@ export interface DeleteOptions extends BasicDeletionOptions {
   skipArchived: boolean;
   orderBy?: 'date' | 'size' | 'id' ;
   orderDirection?: 'ASC' | 'DESC';
+  user_id?: string;  // Added for multi-user support
 }
 
 export enum JobStatus {
@@ -245,6 +250,7 @@ export interface Job {
   created_at: Date;
   started_at?: Date;
   completed_at?: Date;
+  user_id?: string;  // Added for multi-user support
 }
 
 export interface ExportOptions {
@@ -470,4 +476,38 @@ export interface EmailCleanupSystemConfig {
     rollback_capability: boolean;
     user_notification: boolean;
   };
+}
+
+// User Management System Types
+
+export interface UserProfile {
+  userId: string;          // Unique identifier for the user
+  email: string;           // Primary email of the user
+  displayName?: string;    // User's display name
+  profilePicture?: string; // URL to user's profile picture
+  created: Date;           // When the user was first registered
+  lastLogin?: Date;        // Last successful login time
+  role?: 'user' | 'admin'; // User role for access control
+  preferences: {
+    defaultCategory?: PriorityCategory;
+    defaultSearchCriteria?: SearchCriteria;
+    defaultExportFormat?: 'mbox' | 'json' | 'csv';
+    uiSettings?: {
+      theme?: 'light' | 'dark' | 'system';
+      emailsPerPage?: number;
+      notificationsEnabled?: boolean;
+    };
+  };
+  isActive: boolean;       // Whether the user is active
+}
+
+export interface UserSession {
+  sessionId: string;       // Unique session identifier
+  userId: string;          // Reference to the user
+  created: Date;           // When the session was created
+  expires: Date;           // When the session expires
+  lastAccessed: Date;      // Last time the session was used
+  ipAddress?: string;      // IP address of the session
+  userAgent?: string;      // User agent of the session
+  isValid: boolean;        // Whether the session is valid
 }

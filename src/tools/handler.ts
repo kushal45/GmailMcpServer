@@ -1,6 +1,7 @@
 import { CleanupAutomationEngine } from './../cleanup/CleanupAutomationEngine.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { AuthManager } from '../auth/AuthManager.js';
+import { UserManager } from '../auth/UserManager.js';
 import { EmailFetcher } from '../email/EmailFetcher.js';
 import { SearchEngine } from '../search/SearchEngine.js';
 import { ArchiveManager } from '../archive/ArchiveManager.js';
@@ -11,10 +12,17 @@ import { logger } from '../utils/logger.js';
 import { JobStatusStore } from '../database/JobStatusStore.js';
 import { JobQueue } from '../database/JobQueue.js';
 import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
-import { JobStatus } from '../types/index.js';
+import { JobStatus, UserProfile } from '../types/index.js';
+
+// Interface for user context
+export interface UserContext {
+  user_id: string;
+  session_id: string;
+}
 
 interface ToolContext {
   authManager: AuthManager;
+  userManager: UserManager;
   emailFetcher: EmailFetcher;
   searchEngine: SearchEngine;
   archiveManager: ArchiveManager;
@@ -22,8 +30,8 @@ interface ToolContext {
   databaseManager: DatabaseManager;
   cacheManager: CacheManager;
   jobQueue: JobQueue;
-  categorizationEngine:CategorizationEngine
-  cleanupAutomationEngine:CleanupAutomationEngine;
+  categorizationEngine: CategorizationEngine;
+  cleanupAutomationEngine: CleanupAutomationEngine;
 }
 
 export async function handleToolCall(
@@ -34,6 +42,12 @@ export async function handleToolCall(
   logger.info(`Handling tool call: ${toolName}`, { args });
 
   try {
+    // Validate user context for all tools except authenticate
+    // This allows new users to authenticate first
+    if (toolName !== 'authenticate' && toolName !== 'register_user') {
+      await validateUserContext(args, context);
+    }
+    
     switch (toolName) {
       case 'authenticate':
         return await handleAuthenticate(args, context);
@@ -117,6 +131,19 @@ export async function handleToolCall(
       
       case 'get_cleanup_recommendations':
         return await handleGetCleanupRecommendations(args, context);
+        
+      // User Management Tools
+      case 'register_user':
+        return await handleRegisterUser(args, context);
+        
+      case 'get_user_profile':
+        return await handleGetUserProfile(args, context);
+        
+      case 'switch_user':
+        return await handleSwitchUser(args, context);
+        
+      case 'list_users':
+        return await handleListUsers(args, context);
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${toolName}`);
@@ -155,7 +182,7 @@ async function handleListEmails(args: any, context: ToolContext) {
   if (!await context.authManager.hasValidAuth()) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
-
+  const userContext = args.user_context as UserContext;
   const emails = await context.emailFetcher.listEmails({
     category: args.category,
     year: args.year,
@@ -168,8 +195,8 @@ async function handleListEmails(args: any, context: ToolContext) {
     labels: args.labels,
     query: args.query,
     limit: args.limit || 50,
-    offset: args.offset || 0
-  });
+    offset: args.offset || 0,
+  },userContext.user_id);
 
   return {
     content: [{
@@ -183,7 +210,7 @@ async function handleSearchEmails(args: any, context: ToolContext) {
   if (!await context.authManager.hasValidAuth()) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
-
+  const userContext = await args.user_context as UserContext
   const results = await context.searchEngine.search({
     query: args.query,
     category: args.category,
@@ -193,7 +220,7 @@ async function handleSearchEmails(args: any, context: ToolContext) {
     hasAttachments: args.has_attachments,
     archived: args.archived,
     limit: args.limit || 50
-  });
+  },userContext);
 
   return {
     content: [{
@@ -266,6 +293,7 @@ async function handleArchiveEmails(args: any, context: ToolContext) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
+  const userContext = args.user_context as UserContext;
   const result = await context.archiveManager.archiveEmails({
     searchCriteria: args.search_criteria,
     category: args.category,
@@ -275,7 +303,7 @@ async function handleArchiveEmails(args: any, context: ToolContext) {
     exportFormat: args.export_format,
     exportPath: args.export_path,
     dryRun: args.dry_run || false
-  });
+  }, userContext);
 
   return {
     content: [{
@@ -290,11 +318,12 @@ async function handleRestoreEmails(args: any, context: ToolContext) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
+  const userContext = args.user_context as UserContext;
   const result = await context.archiveManager.restoreEmails({
     archiveId: args.archive_id,
     emailIds: args.email_ids,
     restoreLabels: args.restore_labels
-  });
+  }, userContext);
 
   return {
     content: [{
@@ -309,12 +338,13 @@ async function handleCreateArchiveRule(args: any, context: ToolContext) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
+  const userContext = args.user_context as UserContext;
   const result = await context.archiveManager.createRule({
     name: args.name,
     criteria: args.criteria,
     action: args.action,
     schedule: args.schedule
-  });
+  }, userContext);
 
   return {
     content: [{
@@ -325,9 +355,10 @@ async function handleCreateArchiveRule(args: any, context: ToolContext) {
 }
 
 async function handleListArchiveRules(args: any, context: ToolContext) {
+  const userContext = args.user_context as UserContext;
   const rules = await context.archiveManager.listRules({
     activeOnly: args.active_only || false
-  });
+  }, userContext);
 
   return {
     content: [{
@@ -342,13 +373,14 @@ async function handleExportEmails(args: any, context: ToolContext) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
+  const userContext = args.user_context as UserContext;
   const result = await context.archiveManager.exportEmails({
     searchCriteria: args.search_criteria,
     format: args.format,
     includeAttachments: args.include_attachments || false,
     outputPath: args.output_path,
     cloudUpload: args.cloud_upload
-  });
+  }, userContext);
 
   return {
     content: [{
@@ -362,8 +394,7 @@ async function handleDeleteEmails(args: any, context: ToolContext) {
   if (!await context.authManager.hasValidAuth()) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
-
-
+  const userContext = args.user_context as UserContext;
   const result = await context.deleteManager.deleteEmails({
     searchCriteria: args.search_criteria,
     category: args.category,
@@ -372,7 +403,7 @@ async function handleDeleteEmails(args: any, context: ToolContext) {
     skipArchived: args.skip_archived !== false,
     dryRun: args.dry_run || false,
     maxCount: args.max_count
-  });
+  }, userContext);
 
   return {
     content: [{
@@ -386,10 +417,11 @@ async function handleEmptyTrash(args: any, context: ToolContext) {
   if (!await context.authManager.hasValidAuth()) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
+  const userContext = args.user_context as UserContext;
   const result = await context.deleteManager.emptyTrash({
     dryRun: args.dry_run || false,
     maxCount: args.max_count|| 10,
-  });
+  }, userContext);
 
   return {
     content: [{
@@ -400,10 +432,14 @@ async function handleEmptyTrash(args: any, context: ToolContext) {
 }
 
 async function handleSaveSearch(args: any, context: ToolContext) {
+   if (!await context.authManager.hasValidAuth()) {
+    throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
+  }
+  const userContext = args.user_context as UserContext;
   const result = await context.searchEngine.saveSearch({
     name: args.name,
     criteria: args.criteria
-  });
+  },userContext);
 
   return {
     content: [{
@@ -414,7 +450,7 @@ async function handleSaveSearch(args: any, context: ToolContext) {
 }
 
 async function handleListSavedSearches(args: any, context: ToolContext) {
-  const searches = await context.searchEngine.listSavedSearches();
+  const searches = await context.searchEngine.listSavedSearches(args.user_context);
 
   return {
     content: [{
@@ -720,4 +756,269 @@ async function handleGetEmailDetails(args: any, context: ToolContext) {
       text: JSON.stringify(email, null, 2)
     }]
   };
+}
+
+/**
+ * Validate user context for tool calls
+ */
+async function validateUserContext(args: any, context: ToolContext): Promise<void> {
+  // Check if user context is provided
+  if (!args.user_context || !args.user_context.user_id || !args.user_context.session_id) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      'Invalid user context. Please provide user_id and session_id.'
+    );
+  }
+
+  const { user_id, session_id } = args.user_context;
+  
+  // Get session from user manager
+  const session = context.userManager.getSession(session_id);
+  if (!session) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      'Invalid session. Please authenticate again.'
+    );
+  }
+  
+  // Validate session belongs to the user
+  const sessionData = session.getSessionData();
+  if (sessionData.userId !== user_id || !session.isValid()) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      'Invalid session for this user. Please authenticate again.'
+    );
+  }
+  
+  // Extend session validity since it was successfully used
+  session.extendSession();
+  
+  logger.debug(`User context validated for user ${user_id} with session ${session_id}`);
+}
+
+/**
+ * Handle registering a new user
+ */
+async function handleRegisterUser(args: any, context: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
+  try {
+    // Check if caller is admin when not registering first user
+    const allUsers = context.userManager.getAllUsers();
+    if (allUsers.length > 0) {
+      // Only first user can register without authentication
+      // For subsequent registrations, check if caller is admin
+      await validateUserContext(args, context);
+      
+      const caller = context.userManager.getUserById(args.user_context.user_id);
+      if (!caller || caller.role !== 'admin') {
+        throw new McpError(
+          ErrorCode.InvalidRequest,
+          'Only administrators can register new users.'
+        );
+      }
+    }
+    
+    // Create the new user
+    const newUser = await context.userManager.createUser(
+      args.email,
+      args.display_name || undefined
+    );
+    
+    // Set role if provided and valid
+    if (args.role && ['user', 'admin'].includes(args.role)) {
+      await context.userManager.updateUser(newUser.userId, { role: args.role });
+    }
+    
+    // If this is the first user, automatically make them an admin
+    if (allUsers.length === 0) {
+      await context.userManager.updateUser(newUser.userId, { role: 'admin' });
+    }
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          message: 'User registered successfully',
+          userId: newUser.userId
+        }, null, 2)
+      }]
+    };
+  } catch (error) {
+    logger.error('Error registering user:', error);
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Failed to register user: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Handle retrieving a user profile
+ */
+async function handleGetUserProfile(args: any, context: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
+  try {
+    // Get target user ID (defaults to requesting user)
+    const targetUserId = args.target_user_id || args.user_context.user_id;
+    
+    // Check if user has permission to view this profile
+    const requestingUser = context.userManager.getUserById(args.user_context.user_id);
+    const isAdmin = requestingUser?.role === 'admin';
+    const isSelf = targetUserId === args.user_context.user_id;
+    
+    if (!isAdmin && !isSelf) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        'You do not have permission to view this user profile.'
+      );
+    }
+    
+    // Get user profile
+    const userProfile = context.userManager.getUserById(targetUserId);
+    if (!userProfile) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `User with ID ${targetUserId} not found.`
+      );
+    }
+    
+    // Return profile without sensitive information
+    const safeProfile = {
+      userId: userProfile.userId,
+      email: userProfile.email,
+      displayName: userProfile.displayName,
+      profilePicture: userProfile.profilePicture,
+      created: userProfile.created,
+      lastLogin: userProfile.lastLogin,
+      role: userProfile.role,
+      preferences: userProfile.preferences,
+      isActive: userProfile.isActive
+    };
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(safeProfile, null, 2)
+      }]
+    };
+  } catch (error) {
+    logger.error('Error getting user profile:', error);
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Failed to get user profile: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Handle switching active user
+ */
+async function handleSwitchUser(args: any, context: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
+  try {
+    const { target_user_id, user_context } = args;
+    
+    // Check if target user exists
+    const targetUser = context.userManager.getUserById(target_user_id);
+    if (!targetUser) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `User with ID ${target_user_id} not found.`
+      );
+    }
+    
+    // Check if target user is active
+    if (!targetUser.isActive) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `User ${target_user_id} is not active.`
+      );
+    }
+    
+    // Check permissions
+    const requestingUser = context.userManager.getUserById(user_context.user_id);
+    const isAdmin = requestingUser?.role === 'admin';
+    
+    if (!isAdmin && user_context.user_id !== target_user_id) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        'You do not have permission to switch to this user.'
+      );
+    }
+    
+    // Invalidate the current session
+    context.userManager.invalidateSession(user_context.session_id);
+    
+    // Create a new session for the target user
+    const newSession = context.userManager.createSession(target_user_id);
+    const sessionData = newSession.getSessionData();
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          message: 'User switched successfully',
+          userId: target_user_id,
+          sessionId: sessionData.sessionId,
+          expires: sessionData.expires
+        }, null, 2)
+      }]
+    };
+  } catch (error) {
+    logger.error('Error switching user:', error);
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Failed to switch user: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Handle listing all users (admin only)
+ */
+async function handleListUsers(args: any, context: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
+  try {
+    // Check if user has admin permissions
+    const requestingUser = context.userManager.getUserById(args.user_context.user_id);
+    if (!requestingUser || requestingUser.role !== 'admin') {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        'Only administrators can list all users.'
+      );
+    }
+    
+    // Get all users
+    let users = context.userManager.getAllUsers();
+    
+    // Filter by active status if requested
+    if (args.active_only) {
+      users = users.filter(user => user.isActive);
+    }
+    
+    // Map to safe user data
+    const safeUsers = users.map(user => ({
+      userId: user.userId,
+      email: user.email,
+      displayName: user.displayName,
+      role: user.role,
+      created: user.created,
+      lastLogin: user.lastLogin,
+      isActive: user.isActive
+    }));
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          users: safeUsers,
+          total: safeUsers.length
+        }, null, 2)
+      }]
+    };
+  } catch (error) {
+    logger.error('Error listing users:', error);
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Failed to list users: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }

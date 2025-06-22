@@ -17,6 +17,7 @@ export interface ScheduleConfig {
   last_run?: Date;
   created_at: Date;
   updated_at: Date;
+  user_id?: string; // Optional user ID for multi-user support
 }
 
 /**
@@ -93,6 +94,9 @@ export class CleanupScheduler {
 
   /**
    * Create a new schedule
+   */
+  /**
+   * Create a new schedule with optional user context
    */
   async createSchedule(
     config: Omit<
@@ -301,6 +305,9 @@ export class CleanupScheduler {
   /**
    * Execute a schedule
    */
+  /**
+   * Execute a schedule for the specified user
+   */
   private async executeSchedule(schedule: ScheduleConfig): Promise<void> {
     const now = new Date();
 
@@ -321,6 +328,7 @@ export class CleanupScheduler {
       await this.automationEngine.triggerManualCleanup(schedule.policy_id, {
         dry_run: false,
         max_emails: undefined, // Use policy defaults
+        user_id: schedule.user_id // Pass user_id for multi-user support
       });
 
       // Update last run and calculate next run
@@ -562,6 +570,9 @@ export class CleanupScheduler {
   /**
    * Load schedules from database
    */
+  /**
+   * Load schedules from database with user filtering support
+   */
   private async loadSchedules(): Promise<void> {
     try {
       const rows = await this.databaseManager["all"](
@@ -577,6 +588,7 @@ export class CleanupScheduler {
             ...config,
             created_at: new Date(row.created_at * 1000),
             updated_at: new Date(row.updated_at * 1000),
+            user_id: config.user_id // Ensure user_id is included
           };
 
           this.schedules.set(schedule.id, schedule);
@@ -610,6 +622,7 @@ export class CleanupScheduler {
         enabled: schedule.enabled,
         next_run: schedule.next_run.toISOString(),
         last_run: schedule.last_run?.toISOString(),
+        user_id: schedule.user_id // Include user_id in saved data
       };
       const configType = "schedule";
       const result: RunResult = (await this.databaseManager.execute(

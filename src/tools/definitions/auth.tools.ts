@@ -9,7 +9,10 @@ export const authToolConfigs: ToolConfig[] = [
       scopes: ParameterTypes.array(
         { type: 'string' },
         'Additional OAuth scopes (default includes Gmail read/write)'
-      )
+      ),
+      // Note: user_context is not required for authenticate since it's used
+      // before a user has logged in
+      user_context: ParameterTypes.userContext()
     }
   }
 ];

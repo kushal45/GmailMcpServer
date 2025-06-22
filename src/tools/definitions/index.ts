@@ -1,4 +1,5 @@
 import { registerEmailTools } from './email.tools.js';
+import { registerUserTools } from './user.tools.js';
 import { toolRegistry } from '../ToolRegistry.js';
 import { logger } from '../../utils/logger.js';
 
@@ -8,6 +9,9 @@ export async function registerAllTools() {
     
     // Register email tools
     registerEmailTools();
+    
+    // Register user management tools
+    registerUserTools();
     
     // Register other tool categories here
     

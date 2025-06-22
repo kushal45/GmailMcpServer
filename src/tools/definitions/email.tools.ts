@@ -57,8 +57,24 @@ export function registerEmailTools() {
           type: 'number',
           description: 'Number of emails to skip',
           default: 0
+        },
+        user_context: {
+          type: 'object',
+          description: 'User context for access control',
+          properties: {
+            user_id: {
+              type: 'string',
+              description: 'ID of the user making the request'
+            },
+            session_id: {
+              type: 'string',
+              description: 'Session ID of the user making the request'
+            }
+          },
+          required: ['user_id', 'session_id']
         }
-      }
+      },
+      required: ['user_context']
     }
   };
   
@@ -72,9 +88,24 @@ export function registerEmailTools() {
         id: {
           type: 'string',
           description: 'Email ID to retrieve'
+        },
+        user_context: {
+          type: 'object',
+          description: 'User context for access control',
+          properties: {
+            user_id: {
+              type: 'string',
+              description: 'ID of the user making the request'
+            },
+            session_id: {
+              type: 'string',
+              description: 'Session ID of the user making the request'
+            }
+          },
+          required: ['user_id', 'session_id']
         }
       },
-      required: ['id']
+      required: ['id', 'user_context']
     }
   };
 
@@ -92,9 +123,24 @@ export function registerEmailTools() {
         force_refresh:{
           type: 'boolean',
           description: 'Force refresh of email data'
+        },
+        user_context: {
+          type: 'object',
+          description: 'User context for access control',
+          properties: {
+            user_id: {
+              type: 'string',
+              description: 'ID of the user making the request'
+            },
+            session_id: {
+              type: 'string',
+              description: 'Session ID of the user making the request'
+            }
+          },
+          required: ['user_id', 'session_id']
         }
       },
-      required: ["year"]
+      required: ["year", "user_context"]
     }
   };
 

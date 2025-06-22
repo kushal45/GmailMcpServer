@@ -25,9 +25,10 @@ export const archiveToolConfigs: ToolConfig[] = [
       method: archiveMethodParam,
       export_format: exportFormatParam,
       export_path: ParameterTypes.string('Custom export path'),
-      dry_run: ParameterTypes.boolean('Preview what would be archived without actually archiving', false)
+      dry_run: ParameterTypes.boolean('Preview what would be archived without actually archiving', false),
+      user_context: ParameterTypes.userContext()
     },
-    required: ['method']
+    required: ['method', 'user_context']
   },
   
   {
@@ -37,8 +38,10 @@ export const archiveToolConfigs: ToolConfig[] = [
     parameters: {
       archive_id: ParameterTypes.string('Archive record ID to restore from'),
       email_ids: ParameterTypes.array({ type: 'string' }, 'Specific email IDs to restore'),
-      restore_labels: ParameterTypes.array({ type: 'string' }, 'Labels to apply to restored emails')
-    }
+      restore_labels: ParameterTypes.array({ type: 'string' }, 'Labels to apply to restored emails'),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   
   {
@@ -57,9 +60,10 @@ export const archiveToolConfigs: ToolConfig[] = [
         method: archiveMethodParam,
         export_format: exportFormatParam
       }, 'Archive action'),
-      schedule: ParameterTypes.string('How often to run the rule', ['daily', 'weekly', 'monthly'])
+      schedule: ParameterTypes.string('How often to run the rule', ['daily', 'weekly', 'monthly']),
+      user_context: ParameterTypes.userContext()
     },
-    required: ['name', 'criteria', 'action']
+    required: ['name', 'criteria', 'action', 'user_context']
   },
   
   {
@@ -67,8 +71,10 @@ export const archiveToolConfigs: ToolConfig[] = [
     description: 'Lists all configured archive rules',
     category: 'archive',
     parameters: {
-      active_only: ParameterTypes.boolean('Show only active rules', false)
-    }
+      active_only: ParameterTypes.boolean('Show only active rules', false),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   
   {
@@ -83,9 +89,10 @@ export const archiveToolConfigs: ToolConfig[] = [
       cloud_upload: ParameterTypes.object({
         provider: ParameterTypes.string('Cloud storage provider', ['gdrive', 's3', 'dropbox']),
         path: ParameterTypes.string('Cloud storage path')
-      }, 'Cloud upload configuration')
+      }, 'Cloud upload configuration'),
+      user_context: ParameterTypes.userContext()
     },
-    required: ['format']
+    required: ['format', 'user_context']
   }
 ];
 

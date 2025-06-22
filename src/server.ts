@@ -22,6 +22,8 @@ import { CategorizationWorker } from "./categorization/CategorizationWorker.js";
 import { JobStatusStore } from "./database/JobStatusStore.js";
 import { CleanupAutomationEngine } from "./cleanup/CleanupAutomationEngine.js";
 import { setupFormatterRegistry } from "./archive/setupFormatters.js";
+import { FileAccessControlManager } from "./services/FileAccessControlManager.js";
+import { UserManager } from "./auth/UserManager.js";
 
 export class GmailMcpServer {
   private server: Server;
@@ -37,6 +39,8 @@ export class GmailMcpServer {
   private jobStatusStore: JobStatusStore;
   private categorizationWorker: CategorizationWorker | null = null;
   private cleanupAutomationEngine: CleanupAutomationEngine;
+  private fileAccessControlManager: FileAccessControlManager;
+  private userManager: UserManager;
   constructor() {
     this.server = new Server(
       {
@@ -58,6 +62,8 @@ export class GmailMcpServer {
     this.jobStatusStore = JobStatusStore.getInstance();
     this.cacheManager = new CacheManager();
     this.authManager = new AuthManager();
+    this.userManager = new UserManager();
+    this.fileAccessControlManager = new FileAccessControlManager(this.databaseManager);
     this.emailFetcher = new EmailFetcher(
       this.databaseManager,
       this.authManager,
@@ -71,7 +77,8 @@ export class GmailMcpServer {
     this.archiveManager = new ArchiveManager(
       this.authManager,
       this.databaseManager,
-      formatRegistry
+      formatRegistry,
+      this.fileAccessControlManager
     );
     this.deleteManager = new DeleteManager(
       this.authManager,
@@ -125,6 +132,7 @@ export class GmailMcpServer {
             jobQueue: this.jobQueue,
             categorizationEngine: this.categorizationEngine,
             cleanupAutomationEngine: this.cleanupAutomationEngine,
+            userManager: this.userManager,
           }
         );
         return result;

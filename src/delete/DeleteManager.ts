@@ -27,12 +27,19 @@ export class DeleteManager {
   }
 
   async deleteEmails(
-    options: DeleteOptions
+    options: DeleteOptions,
+    userContext: { user_id: string; session_id: string }
   ): Promise<{ deleted: number; errors: string[] }> {
-    logger.info("Starting email deletion", { options });
+    logger.info("Starting email deletion", { options, userId: userContext.user_id });
     try {
+      // Add user context to options
+      const optionsWithUser = {
+        ...options,
+        user_id: userContext.user_id
+      };
+      
       // Get emails to delete based on criteria
-      const emails = await this.getEmailsToDelete(options);
+      const emails = await this.getEmailsToDelete(optionsWithUser);
 
       if (emails.length === 0) {
         return { deleted: 0, errors: [] };
@@ -46,12 +53,12 @@ export class DeleteManager {
         };
       }
 
-      // Perform actual deletion
-      const result = await this.performDeletion(emails);
+      // Perform actual deletion with user context
+      const result = await this.performDeletion(emails, userContext);
 
       // Update database for successfully deleted emails
       if (result.deleted > 0) {
-        await this.deleteEmailsFromDb(emails);
+        await this.deleteEmailsFromDb(emails, userContext.user_id);
       }
 
       logger.info("Deletion completed", {
@@ -123,9 +130,11 @@ export class DeleteManager {
   }
 
   private async performDeletion(
-    emails: EmailIndex[]
+    emails: EmailIndex[],
+    userContext: { user_id: string; session_id: string }
   ): Promise<{ deleted: number; errors: string[] }> {
-    const gmail = await this.authManager.getGmailClient();
+    // Get Gmail client for the specific user
+    const gmail = await this.authManager.getGmailClient(userContext.session_id);
     let deleted = 0;
     const errors: string[] = [];
 
@@ -175,18 +184,18 @@ export class DeleteManager {
     return { deleted, errors };
   }
 
-  private async deleteEmailsFromDb(emails: EmailIndex[]): Promise<void> {
+  private async deleteEmailsFromDb(emails: EmailIndex[], userId: string): Promise<void> {
     // In a real implementation, you might want to:
     // 1. Remove from database
     // 2. Or mark with a "deleted" flag
     // 3. Keep audit trail
 
-    logger.debug("deleting emails from sqlite DB", { count: emails.length });
-    const deleted=await this.databaseManager.deleteEmailIds(emails);
-    logger.info("Emails deleted from DB: ", { count: deleted });
+    logger.debug("deleting emails from sqlite DB", { count: emails.length, userId });
+    const deleted = await this.databaseManager.deleteEmailIds(emails, userId);
+    logger.info("Emails deleted from DB: ", { count: deleted, userId });
   }
 
-  async getDeleteStatistics(): Promise<any> {
+  async getDeleteStatistics(userContext: { user_id: string; session_id: string }): Promise<any> {
     // Get statistics about deletable emails
     const stats = {
       byCategory: {
@@ -203,8 +212,11 @@ export class DeleteManager {
       total: 0,
     };
 
-    // Get all non-archived emails
-    const emails = await this.databaseManager.searchEmails({ archived: false });
+    // Get all non-archived emails for the specific user
+    const emails = await this.databaseManager.searchEmails({
+      archived: false,
+      user_id: userContext.user_id
+    });
 
     for (const email of emails) {
       stats.byCategory[email?.category ?? "high"]++;
@@ -278,13 +290,14 @@ export class DeleteManager {
   }
 
   async emptyTrash(
-    trashOption: BasicDeletionOptions
+    trashOption: BasicDeletionOptions,
+    userContext: { user_id: string; session_id: string }
   ): Promise<{ deleted: number; errors: string[] }> {
     let messages: gmail_v1.Schema$Message[] = [];
     const errors: string[] = [];
     let deleted = 0;
     try {
-      const gmail = await this.authManager.getGmailClient();
+      const gmail = await this.authManager.getGmailClient(userContext.session_id);
 
       
       // Get all messages in trash
@@ -327,7 +340,8 @@ export class DeleteManager {
       batch_size?: number;
       delay_between_batches_ms?: number;
       max_failures?: number;
-    } = {}
+    } = {},
+    userContext?: { user_id: string; session_id: string }
   ): Promise<{
     deleted: number;
     archived: number;
@@ -396,13 +410,15 @@ export class DeleteManager {
             const action = policy?.action?.type || "delete";
 
             if (action === "delete") {
-              const result = await this.performDeletion(safeEmails);
+              const result = userContext
+                ? await this.performDeletion(safeEmails, userContext)
+                : await this.performDeletion(safeEmails, { user_id: this.databaseManager.getUserId() || 'default', session_id: 'default' });
               totalDeleted += result.deleted;
               totalFailed += safeEmails.length - result.deleted;
               allErrors.push(...result.errors);
             } else if (action === "archive") {
               // Archive instead of delete
-              await this.archiveEmails(safeEmails);
+              await this.archiveEmails(safeEmails, userContext?.user_id);
               totalArchived += safeEmails.length;
             }
 
@@ -534,24 +550,25 @@ export class DeleteManager {
   /**
    * Archive emails instead of deleting them
    */
-  private async archiveEmails(emails: EmailIndex[]): Promise<void> {
+  private async archiveEmails(emails: EmailIndex[], userId?: string): Promise<void> {
     const emailIds = emails.map((email) => email.id);
-    await this.databaseManager.markEmailsAsDeleted(emailIds);
+    await this.databaseManager.markEmailsAsDeleted(emailIds, userId);
   }
 
   /**
    * Get cleanup deletion statistics
    */
-  async getCleanupDeletionStats(): Promise<{
+  async getCleanupDeletionStats(userContext?: { user_id: string; session_id: string }): Promise<{
     deletable_by_category: Record<string, number>;
     deletable_by_age: Record<string, number>;
     total_deletable: number;
     total_storage_recoverable: number;
   }> {
     try {
-      // Get all non-archived emails
+      // Get all non-archived emails for the specific user
       const allEmails = await this.databaseManager.searchEmails({
         archived: false,
+        user_id: userContext?.user_id || this.databaseManager.getUserId() || 'default'
       });
 
       const stats = {
@@ -597,11 +614,15 @@ export class DeleteManager {
       category?: "high" | "medium" | "low";
       olderThanDays?: number;
       sizeThreshold?: number;
-    }>
+    }>,
+    userContext?: { user_id: string; session_id: string }
   ): Promise<void> {
     // This would set up automatic deletion rules
     // For safety, this should be implemented with extreme caution
-    logger.info("Auto-deletion rules would be configured here", { rules });
+    logger.info("Auto-deletion rules would be configured here", {
+      rules,
+      userId: userContext?.user_id || this.databaseManager.getUserId() || 'default'
+    });
 
     // In a real implementation:
     // 1. Store rules in database
