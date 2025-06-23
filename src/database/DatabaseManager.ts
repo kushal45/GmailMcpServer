@@ -23,6 +23,9 @@ export class DatabaseManager {
   private initialized: boolean = false;
   private instanceId: string = Math.random().toString(36).substr(2, 9);
   private userId: string | undefined;
+  private pendingWrites: number = 0;
+  private idlePromise: Promise<void> = Promise.resolve();
+  private resolveIdle: (() => void) | null = null;
   
   /**
    * Create a new DatabaseManager instance
@@ -514,7 +517,7 @@ export class DatabaseManager {
           timestamp: new Date().toISOString(),
           stackTrace: new Error().stack
         });
-        
+        this.incrementWrites();
         // Attempt automatic reconnection for test environments
         try {
           //await this.reconnect();
@@ -1403,6 +1406,15 @@ export class DatabaseManager {
     // Use the provided userId or fall back to the instance userId
     const ownerUserId = userId || this.userId;
     
+    console.log('🔍 DIAGNOSTIC: DatabaseManager.deleteEmailIds called', {
+      emailCount: emails.length,
+      requestedUserId: userId,
+      instanceUserId: this.userId,
+      finalUserId: ownerUserId,
+      emailIds: emails.slice(0, 3).map(e => e.id),
+      emailUserIds: emails.slice(0, 3).map(e => e.user_id || 'undefined')
+    });
+    
     let sql = `DELETE FROM email_index WHERE id IN (${emails
       .map(() => "?")
       .join(", ")})`;
@@ -1415,20 +1427,62 @@ export class DatabaseManager {
       params.push(ownerUserId);
     }
     
-    await this.run(sql, params);
-    return emails.length;
+    console.log('🔍 DIAGNOSTIC: Executing delete SQL', {
+      sql: sql,
+      paramCount: params.length,
+      firstFewParams: params.slice(0, 5),
+      hasUserIdFilter: !!ownerUserId
+    });
+    
+    const result = await this.run(sql, params);
+    const actualDeleted = (result as any)?.changes || 0;
+    
+    console.log('🔍 DIAGNOSTIC: Delete SQL result', {
+      requestedEmails: emails.length,
+      actualChanges: actualDeleted,
+      difference: emails.length - actualDeleted
+    });
+    
+    return actualDeleted; // Return actual deleted count, not requested count
+  }
+
+  private incrementWrites() {
+    if (this.pendingWrites === 0) {
+      this.idlePromise = new Promise(resolve => {
+        this.resolveIdle = resolve;
+      });
+    }
+    this.pendingWrites++;
+  }
+
+  private decrementWrites() {
+    this.pendingWrites--;
+    if (this.pendingWrites === 0 && this.resolveIdle) {
+      this.resolveIdle();
+      this.resolveIdle = null;
+    }
+  }
+
+  async waitForIdle(): Promise<void> {
+    return this.idlePromise;
   }
 
   async close(): Promise<void> {
+    await this.waitForIdle();
     if (this.db) {
-      await new Promise<void>((resolve, reject) => {
-        this.db!.close((err) => {
-          if (err) reject(err);
-          else resolve();
+      return new Promise((resolve, reject) => {
+        this.db?.close((err) => {
+          if (err) {
+            logger.error('Failed to close database:', err);
+            reject(err);
+          } else {
+            this.db = null;
+            this.initialized = false;
+            logger.info('Database connection closed');
+            resolve();
+          }
         });
       });
-      this.db = null;
-      this.initialized = false;
     }
   }
 

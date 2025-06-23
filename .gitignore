@@ -45,3 +45,4 @@ temp/
 *.tmp
 var/
 var/*
+test-*.json

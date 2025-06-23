@@ -31,41 +31,54 @@ export class DeleteManager {
     options: DeleteOptions,
     userContext: { user_id: string; session_id: string }
   ): Promise<{ deleted: number; errors: string[] }> {
-    logger.info("Starting email deletion", { options, userId: userContext.user_id });
+    logger.info("Starting email deletion", {
+      options,
+      userId: userContext.user_id,
+    });
     try {
       // Add user context to options
       const optionsWithUser = {
         ...options,
-        user_id: userContext.user_id
+        user_id: userContext.user_id,
       };
-      
-      // Get emails to delete based on criteria
-      const emails = await this.getEmailsToDelete(optionsWithUser);
 
-      if (emails.length === 0) {
+      // Get emails to delete based on criteria
+      let emails = await this.getEmailsToDelete(optionsWithUser);
+      // Only operate on emails that are not already archived (unless skipArchived is false)
+      let emailsToProcess = emails;
+      if (options.skipArchived !== false) {
+        emailsToProcess = emails.filter((e) => !e.archived);
+      }
+
+      if (emailsToProcess.length === 0) {
         return { deleted: 0, errors: [] };
       }
 
       if (options.dryRun) {
-        logger.info("Dry run - would delete emails", { count: emails.length });
+        logger.info("Dry run - would delete emails", {
+          count: emailsToProcess.length,
+        });
         return {
-          deleted: emails.length,
-          errors: [`DRY RUN - Would delete ${emails.length} emails`],
+          deleted: emailsToProcess.length,
+          errors: [`DRY RUN - Would delete ${emailsToProcess.length} emails`],
         };
       }
 
       // Perform actual deletion with user context
-      const result = await this.performDeletion(emails, userContext);
+      const result = await this.performDeletion(emailsToProcess, userContext);
 
       // Update database for successfully deleted emails
-      if (result.deleted > 0) {
-        await this.deleteEmailsFromDb(emails, userContext.user_id);
+      if (result.deleted > 0 && result.deleted == emailsToProcess.length) {
+        const deletdFromDb = await this.databaseManager.deleteEmailIds(
+          emailsToProcess,
+          userContext.user_id
+        );
+        if (deletdFromDb != emailsToProcess.length) {
+          result.errors.push(
+            "Deletion failed, some emails were not deleted from the database"
+          );
+        }
       }
-
-      logger.info("Deletion completed", {
-        deleted: result.deleted,
-        errors: result.errors.length,
-      });
 
       return result;
     } catch (error: unknown) {
@@ -82,52 +95,71 @@ export class DeleteManager {
   private async getEmailsToDelete(
     options: DeleteOptions
   ): Promise<EmailIndex[]> {
-    const criteria: any = {};
-
-    if (options.searchCriteria) {
-      Object.assign(criteria, options.searchCriteria);
-    }
-
-    
-
-    if (options.year) {
-      criteria.year = options.year;
-    }
-
-    if (options.sizeThreshold) {
-      criteria.sizeRange = { min: 0, max: options.sizeThreshold };
-    }
-
-    if (options.skipArchived) {
-      criteria.archived = false;
-    }
-
-    if (!options?.orderBy) {
-      criteria.orderBy = `id`;
+    // If a category is specified, use it directly
+    if (options.category) {
+      const criteria: any = { ...options.searchCriteria };
+      criteria.category = options.category;
+      if (options.year) criteria.year = options.year;
+      if (options.sizeThreshold)
+        criteria.sizeRange = { min: 0, max: options.sizeThreshold };
+      // Always exclude archived unless skipArchived is false
+      if (options.skipArchived === false) {
+        // include both archived and non-archived
+      } else {
+        criteria.archived = 0;
+      }
+      if (options?.maxCount) criteria.limit = options.maxCount;
+      if (options?.orderBy) criteria.orderBy = options.orderBy;
+      if (options?.orderDirection)
+        criteria.orderDirection = options.orderDirection;
+      if (options.user_id) criteria.user_id = options.user_id;
+      // Debug log
+      logger.info("[getEmailsToDelete] Using criteria for category", {
+        criteria,
+      });
+      const result = await this.databaseManager.searchEmails(criteria);
+      logger.info("[getEmailsToDelete] Result count", { count: result.length });
+      if (result.length > 0) {
+        logger.info("[getEmailsToDelete] First few results", {
+          emails: result
+            .slice(0, 3)
+            .map((e) => ({
+              id: e.id,
+              user_id: e.user_id,
+              archived: e.archived,
+              category: e.category,
+            })),
+        });
+      } else {
+        logger.info("[getEmailsToDelete] No results returned for criteria", {
+          criteria,
+        });
+      }
+      return result;
     } else {
-      criteria.orderBy = options.orderBy;
+      // If no category is specified, default to deleting only low and medium priority emails
+      const criteria: any = { ...options.searchCriteria };
+      criteria.user_id = options.user_id;
+      // Only low and medium
+      criteria.categories = ["low", "medium"];
+      if (options.year) criteria.year = options.year;
+      if (options.sizeThreshold)
+        criteria.sizeRange = { min: 0, max: options.sizeThreshold };
+      // Always exclude archived unless skipArchived is false
+      if (options.skipArchived === false) {
+        // include both archived and non-archived
+      } else {
+        criteria.archived = 0;
+      }
+      logger.debug("[getEmailsToDelete] Using default criteria (low/medium)", {
+        criteria,
+      });
+      const result = await this.databaseManager.searchEmails(criteria);
+      logger.debug("[getEmailsToDelete] Result count", {
+        count: result.length,
+      });
+      return result;
     }
-
-    if (!options?.orderDirection) {
-      criteria.orderDirection = "ASC";
-    } else {
-      criteria.orderDirection = options.orderDirection;
-    }
-    if(!options.category){
-        criteria.categories = [PriorityCategory.LOW,PriorityCategory.MEDIUM];
-    }
-    
-    if(options.category){
-       criteria.categories = [options.category];
-    }
-
-    if(options?.maxCount){
-      criteria.limit = options.maxCount;
-    }
-
-    const emails = await this.databaseManager.searchEmails(criteria);
-
-    return emails;
   }
 
   private async performDeletion(
@@ -185,63 +217,55 @@ export class DeleteManager {
     return { deleted, errors };
   }
 
-  private async deleteEmailsFromDb(emails: EmailIndex[], userId: string): Promise<void> {
+  private async deleteEmailsFromDb(
+    emails: EmailIndex[],
+    userId: string
+  ): Promise<void> {
     // In a real implementation, you might want to:
     // 1. Remove from database
     // 2. Or mark with a "deleted" flag
     // 3. Keep audit trail
 
-    logger.debug("deleting emails from sqlite DB", { count: emails.length, userId });
+    logger.debug("deleting emails from sqlite DB", {
+      count: emails.length,
+      userId,
+    });
     const deleted = await this.databaseManager.deleteEmailIds(emails, userId);
     logger.info("Emails deleted from DB: ", { count: deleted, userId });
   }
 
-  async getDeleteStatistics(userContext: { user_id: string; session_id: string }): Promise<any> {
-    // Get statistics about deletable emails
-    const stats = {
-      byCategory: {
-        high: 0,
-        medium: 0,
-        low: 0,
-      },
-      byYear: {} as Record<number, number>,
-      bySize: {
-        small: 0,
-        medium: 0,
-        large: 0,
-      },
-      total: 0,
-    };
-
-    // Get all non-archived emails for the specific user
-    const emails = await this.databaseManager.searchEmails({
-      archived: false,
-      user_id: userContext.user_id
-    });
-
-    for (const email of emails) {
-      stats.byCategory[email?.category ?? "high"]++;
-
-      const year = email.year || new Date().getFullYear();
-      if (!stats.byYear[year]) {
-        stats.byYear[year] = 0;
-      }
-      stats.byYear[year]++;
-      if (email.size == null) {
-        throw new Error(`Email size is null for email ID: ${email.id}`);
-      }
-      if (email.size < 102400) {
-        stats.bySize.small++;
-      } else if (email.size < 1048576) {
-        stats.bySize.medium++;
-      } else {
-        stats.bySize.large++;
-      }
-
-      stats.total++;
+  async getDeleteStatistics(userContext: {
+    user_id: string;
+    session_id: string;
+  }): Promise<any> {
+    // Use the database's getEmailStatistics for accuracy
+    const statsRaw = await this.databaseManager.getEmailStatistics(
+      false,
+      userContext.user_id
+    );
+    // Format to match test expectations
+    const byCategory: Record<string, number> = { high: 0, medium: 0, low: 0 };
+    for (const row of statsRaw.categories) {
+      byCategory[row.category] = row.count;
     }
-
-    return stats;
+    const byYear: Record<number, number> = {};
+    for (const row of statsRaw.years) {
+      byYear[row.year] = row.count;
+    }
+    const bySize = {
+      small: statsRaw.sizes.small || 0,
+      medium: statsRaw.sizes.medium || 0,
+      large: statsRaw.sizes.large || 0,
+    };
+    return {
+      byCategory,
+      byYear,
+      bySize,
+      total:
+        statsRaw.years && statsRaw.years.length > 0
+          ? statsRaw.years.reduce((acc: number, row: any) => acc + row.count, 0)
+          : Object.values(byCategory).reduce((acc, v) => acc + v, 0),
+    };
   }
 
   private async actualDeletions(
@@ -271,7 +295,7 @@ export class DeleteManager {
 
   private async listTrashEmails(
     gmail: gmail_v1.Gmail,
-    maxEmailCount?:number
+    maxEmailCount?: number
   ): Promise<{ messages: gmail_v1.Schema$Message[]; errors: string[] }> {
     let messages: gmail_v1.Schema$Message[] = [];
     let errors: string[] = [];
@@ -279,7 +303,7 @@ export class DeleteManager {
       const response = await gmail.users.messages.list({
         userId: "me",
         labelIds: ["TRASH"],
-        maxResults: maxEmailCount??100,
+        maxResults: maxEmailCount ?? 100,
       });
 
       const messages = response.data.messages || [];
@@ -298,11 +322,15 @@ export class DeleteManager {
     const errors: string[] = [];
     let deleted = 0;
     try {
-      const gmail = await this.authManager.getGmailClient(userContext.session_id);
+      const gmail = await this.authManager.getGmailClient(
+        userContext.session_id
+      );
 
-      
       // Get all messages in trash
-      const ListTrashResult = await this.listTrashEmails(gmail,trashOption?.maxCount);
+      const ListTrashResult = await this.listTrashEmails(
+        gmail,
+        trashOption?.maxCount
+      );
       messages = ListTrashResult.messages;
       errors.push(...ListTrashResult.errors);
       if (messages.length === 0 || errors.length > 0) {
@@ -413,7 +441,10 @@ export class DeleteManager {
             if (action === "delete") {
               const result = userContext
                 ? await this.performDeletion(safeEmails, userContext)
-                : await this.performDeletion(safeEmails, { user_id: this.databaseManager.getUserId() || 'default', session_id: 'default' });
+                : await this.performDeletion(safeEmails, {
+                    user_id: this.databaseManager.getUserId() || "default",
+                    session_id: "default",
+                  });
               totalDeleted += result.deleted;
               totalFailed += safeEmails.length - result.deleted;
               allErrors.push(...result.errors);
@@ -551,7 +582,10 @@ export class DeleteManager {
   /**
    * Archive emails instead of deleting them
    */
-  private async archiveEmails(emails: EmailIndex[], userId?: string): Promise<void> {
+  private async archiveEmails(
+    emails: EmailIndex[],
+    userId?: string
+  ): Promise<void> {
     const emailIds = emails.map((email) => email.id);
     await this.databaseManager.markEmailsAsDeleted(emailIds, userId);
   }
@@ -559,7 +593,10 @@ export class DeleteManager {
   /**
    * Get cleanup deletion statistics
    */
-  async getCleanupDeletionStats(userContext?: { user_id: string; session_id: string }): Promise<{
+  async getCleanupDeletionStats(userContext?: {
+    user_id: string;
+    session_id: string;
+  }): Promise<{
     deletable_by_category: Record<string, number>;
     deletable_by_age: Record<string, number>;
     total_deletable: number;
@@ -569,7 +606,8 @@ export class DeleteManager {
       // Get all non-archived emails for the specific user
       const allEmails = await this.databaseManager.searchEmails({
         archived: false,
-        user_id: userContext?.user_id || this.databaseManager.getUserId() || 'default'
+        user_id:
+          userContext?.user_id || this.databaseManager.getUserId() || "default",
       });
 
       const stats = {
@@ -622,7 +660,8 @@ export class DeleteManager {
     // For safety, this should be implemented with extreme caution
     logger.info("Auto-deletion rules would be configured here", {
       rules,
-      userId: userContext?.user_id || this.databaseManager.getUserId() || 'default'
+      userId:
+        userContext?.user_id || this.databaseManager.getUserId() || "default",
     });
 
     // In a real implementation:

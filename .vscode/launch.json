@@ -16,7 +16,8 @@
       "cwd": "${workspaceFolder}",
       "env": {
         "NODE_ENV": "test",
-        "NODE_OPTIONS": "--experimental-vm-modules"
+        "NODE_OPTIONS": "--experimental-vm-modules",
+        "timeout": "100000"
       }
     },
     {
