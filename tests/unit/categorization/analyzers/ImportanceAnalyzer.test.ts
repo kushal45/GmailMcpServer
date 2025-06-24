@@ -109,6 +109,7 @@ describe('ImportanceAnalyzer Unit Tests', () => {
 
     testContext = {
       email: testEmail,
+      user_id: 'test-user',
       subject: testEmail.subject || 'Test Subject',
       sender: testEmail.sender || 'test@example.com',
       snippet: testEmail.snippet || 'Test email snippet',
@@ -152,7 +153,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should match urgent keywords in subject', async () => {
       const context = {
         ...testContext,
-        subject: 'URGENT: Please review this document'
+        subject: 'URGENT: Please review this document',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -165,7 +167,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should match urgent keywords in snippet', async () => {
       const context = {
         ...testContext,
-        snippet: 'This is critical and needs immediate attention'
+        snippet: 'This is critical and needs immediate attention',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -177,7 +180,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should be case insensitive for keyword matching', async () => {
       const context = {
         ...testContext,
-        subject: 'CRITICAL update required'
+        subject: 'CRITICAL update required',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -188,7 +192,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should not match partial keywords', async () => {
       const context = {
         ...testContext,
-        subject: 'Urgently needed documentation'
+        subject: 'Urgently needed documentation',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -201,7 +206,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should match important domains', async () => {
       const context = {
         ...testContext,
-        sender: 'boss@company.com'
+        sender: 'boss@company.com',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -213,7 +219,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should be case insensitive for domain matching', async () => {
       const context = {
         ...testContext,
-        sender: 'user@CLIENT.COM'
+        sender: 'user@CLIENT.COM',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -224,7 +231,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should not match unrelated domains', async () => {
       const context = {
         ...testContext,
-        sender: 'spam@random.com'
+        sender: 'spam@random.com',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -237,7 +245,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should match important labels', async () => {
       const context = {
         ...testContext,
-        labels: ['INBOX', 'important']
+        labels: ['INBOX', 'important'],
+        user_id: 'test-user'
       };
       // Also update the email object to have the same labels
       context.email.labels = ['INBOX', 'important'];
@@ -250,7 +259,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should be case insensitive for label matching', async () => {
       const context = {
         ...testContext,
-        labels: ['INBOX', 'IMPORTANT']
+        labels: ['INBOX', 'IMPORTANT'],
+        user_id: 'test-user'
       };
       // Also update the email object to have the same labels
       context.email.labels = ['INBOX', 'IMPORTANT'];
@@ -263,7 +273,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should handle empty labels array', async () => {
       const context = {
         ...testContext,
-        labels: []
+        labels: [],
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -276,7 +287,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should detect no-reply senders', async () => {
       const context = {
         ...testContext,
-        sender: 'noreply@example.com'
+        sender: 'noreply@example.com',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -288,7 +300,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should detect no-reply with hyphen', async () => {
       const context = {
         ...testContext,
-        sender: 'no-reply@example.com'
+        sender: 'no-reply@example.com',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -299,7 +312,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should not match regular senders', async () => {
       const context = {
         ...testContext,
-        sender: 'user@example.com'
+        sender: 'user@example.com',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -313,7 +327,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         size: 2000000, // 2MB
-        hasAttachments: true
+        hasAttachments: true,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -326,7 +341,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         size: 50000, // 50KB
-        hasAttachments: true
+        hasAttachments: true,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -338,7 +354,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         size: 2000000, // 2MB
-        hasAttachments: false
+        hasAttachments: false,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -352,7 +369,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         subject: 'URGENT: Critical issue',
-        sender: 'boss@company.com'
+        sender: 'boss@company.com',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -366,7 +384,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
         ...testContext,
         sender: 'noreply@spam.com',
         size: 2000000,
-        hasAttachments: true
+        hasAttachments: true,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -378,7 +397,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should categorize as medium priority for middle scores', async () => {
       const context = {
         ...testContext,
-        subject: 'Regular email'
+        subject: 'Regular email',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -395,7 +415,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
         ...testContext,
         subject: 'URGENT: Critical issue',
         sender: 'boss@company.com',
-        labels: ['important']
+        labels: ['important'],
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -408,7 +429,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         subject: 'Regular email',
-        sender: 'user@random.com'
+        sender: 'user@random.com',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -569,7 +591,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         subject: '',
-        snippet: ''
+        snippet: '',
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -581,7 +604,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should handle undefined labels', async () => {
       const context = {
         ...testContext,
-        labels: undefined as any
+        labels: undefined as any,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);
@@ -592,7 +616,8 @@ describe('ImportanceAnalyzer Unit Tests', () => {
     it('should handle zero size emails', async () => {
       const context = {
         ...testContext,
-        size: 0
+        size: 0,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeImportance(context);

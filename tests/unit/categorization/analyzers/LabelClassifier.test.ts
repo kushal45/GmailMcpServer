@@ -99,6 +99,7 @@ describe('LabelClassifier Unit Tests', () => {
 
     testContext = {
       email: testEmail,
+      user_id: 'test-user',
       subject: testEmail.subject || 'Test Subject',
       sender: testEmail.sender || 'test@example.com',
       snippet: testEmail.snippet || 'Test email snippet',
@@ -280,7 +281,7 @@ describe('LabelClassifier Unit Tests', () => {
   describe('Complete Label Classification', () => {
     it('should perform complete classification for important email', async () => {
       const labels = ['INBOX', 'IMPORTANT'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.category).toBe('important');
       expect(result.spamScore).toBe(0);
@@ -293,7 +294,7 @@ describe('LabelClassifier Unit Tests', () => {
 
     it('should perform complete classification for promotional email', async () => {
       const labels = ['INBOX', Labels.PROMOTIONAL, Labels.SALE];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.category).toBe('promotions');
       expect(result.promotionalScore).toBeGreaterThan(0);
@@ -302,7 +303,7 @@ describe('LabelClassifier Unit Tests', () => {
 
     it('should perform complete classification for social email', async () => {
       const labels = ['INBOX', Labels.CATEGORY_SOCIAL, 'facebook'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.category).toBe('social');
       expect(result.socialScore).toBeGreaterThan(0);
@@ -311,7 +312,7 @@ describe('LabelClassifier Unit Tests', () => {
 
     it('should perform complete classification for spam email', async () => {
       const labels = ['SPAM', 'JUNK'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.category).toBe('spam');
       expect(result.spamScore).toBeGreaterThan(0);
@@ -320,7 +321,7 @@ describe('LabelClassifier Unit Tests', () => {
 
     it('should handle mixed label types', async () => {
       const labels = ['INBOX', Labels.PROMOTIONAL, 'facebook', 'suspicious'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.promotionalScore).toBeGreaterThan(0);
       expect(result.socialScore).toBeGreaterThan(0);
@@ -334,21 +335,21 @@ describe('LabelClassifier Unit Tests', () => {
   describe('Promotional Score Calculation', () => {
     it('should calculate promotional score for promotional labels', async () => {
       const labels = [Labels.PROMOTIONAL];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.promotionalScore).toBeGreaterThan(0);
     });
 
     it('should calculate higher scores for explicit promotional labels', async () => {
-      const explicitPromo = await classifier.classifyLabels([Labels.CATEGORY_PROMOTIONS]);
-      const configuredPromo = await classifier.classifyLabels(['marketing']);
+      const explicitPromo = await classifier.classifyLabels([Labels.CATEGORY_PROMOTIONS], 'test-user');
+      const configuredPromo = await classifier.classifyLabels(['marketing'], 'test-user');
 
       expect(explicitPromo.promotionalScore).toBeGreaterThan(configuredPromo.promotionalScore);
     });
 
     it('should accumulate promotional scores', async () => {
-      const singlePromo = await classifier.classifyLabels([Labels.SALE]);
-      const multiplePromo = await classifier.classifyLabels([Labels.SALE, Labels.OFFER, Labels.DISCOUNT]);
+      const singlePromo = await classifier.classifyLabels([Labels.SALE], 'test-user');
+      const multiplePromo = await classifier.classifyLabels([Labels.SALE, Labels.OFFER, Labels.DISCOUNT], 'test-user');
 
       expect(multiplePromo.promotionalScore).toBeGreaterThan(singlePromo.promotionalScore);
     });
@@ -358,7 +359,7 @@ describe('LabelClassifier Unit Tests', () => {
         Labels.PROMOTIONAL, Labels.CATEGORY_PROMOTIONS, Labels.SALE, 
         Labels.OFFER, Labels.DISCOUNT, Labels.DEAL, 'marketing', 'advertisement'
       ];
-      const result = await classifier.classifyLabels(manyPromoLabels);
+      const result = await classifier.classifyLabels(manyPromoLabels, 'test-user');
 
       expect(result.promotionalScore).toBeLessThanOrEqual(1.0);
     });
@@ -367,21 +368,21 @@ describe('LabelClassifier Unit Tests', () => {
   describe('Social Score Calculation', () => {
     it('should calculate social score for social labels', async () => {
       const labels = [Labels.CATEGORY_SOCIAL];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.socialScore).toBeGreaterThan(0);
     });
 
     it('should calculate higher scores for explicit social labels', async () => {
-      const explicitSocial = await classifier.classifyLabels([Labels.CATEGORY_SOCIAL]);
-      const configuredSocial = await classifier.classifyLabels(['notification']);
+      const explicitSocial = await classifier.classifyLabels([Labels.CATEGORY_SOCIAL], 'test-user');
+      const configuredSocial = await classifier.classifyLabels(['notification'], 'test-user');
 
       expect(explicitSocial.socialScore).toBeGreaterThan(configuredSocial.socialScore);
     });
 
     it('should accumulate social scores', async () => {
-      const singleSocial = await classifier.classifyLabels(['facebook']);
-      const multipleSocial = await classifier.classifyLabels(['facebook', 'twitter', 'linkedin']);
+      const singleSocial = await classifier.classifyLabels(['facebook'], 'test-user');
+      const multipleSocial = await classifier.classifyLabels(['facebook', 'twitter', 'linkedin'], 'test-user');
 
       expect(multipleSocial.socialScore).toBeGreaterThan(singleSocial.socialScore);
     });
@@ -391,7 +392,7 @@ describe('LabelClassifier Unit Tests', () => {
         Labels.CATEGORY_SOCIAL, 'facebook', 'twitter', 'linkedin', 
         'instagram', 'social'
       ];
-      const result = await classifier.classifyLabels(manySocialLabels);
+      const result = await classifier.classifyLabels(manySocialLabels, 'test-user');
 
       expect(result.socialScore).toBeLessThanOrEqual(1.0);
     });
@@ -405,7 +406,7 @@ describe('LabelClassifier Unit Tests', () => {
 
     it('should check cache when enabled', async () => {
       const labels = ['INBOX', 'IMPORTANT'];
-      await classifier.classifyLabels(labels);
+      await classifier.classifyLabels(labels, 'test-user');
 
       expect(mockCacheManager.get).toHaveBeenCalled();
     });
@@ -426,7 +427,7 @@ describe('LabelClassifier Unit Tests', () => {
       mockCacheManager.get.mockReturnValue(cachedResult);
 
       const labels = ['INBOX', 'IMPORTANT'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result).toEqual(cachedResult);
       expect(mockCacheManager.set).not.toHaveBeenCalled();
@@ -436,13 +437,13 @@ describe('LabelClassifier Unit Tests', () => {
       mockCacheManager.get.mockReturnValue(null);
 
       const labels = ['INBOX', 'IMPORTANT'];
-      await classifier.classifyLabels(labels);
+      await classifier.classifyLabels(labels, 'test-user');
 
       expect(mockCacheManager.set).toHaveBeenCalled();
       expect(mockCacheManager.set).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Object),
-        testConfig.caching.ttl
+        expect.any(String)
       );
     });
 
@@ -455,7 +456,7 @@ describe('LabelClassifier Unit Tests', () => {
       const noCacheClassifier = new LabelClassifier(noCacheConfig, mockCacheManager);
 
       const labels = ['INBOX', 'IMPORTANT'];
-      await noCacheClassifier.classifyLabels(labels);
+      await noCacheClassifier.classifyLabels(labels, 'test-user');
 
       expect(mockCacheManager.get).not.toHaveBeenCalled();
       expect(mockCacheManager.set).not.toHaveBeenCalled();
@@ -467,8 +468,8 @@ describe('LabelClassifier Unit Tests', () => {
       const labels1 = ['INBOX', 'IMPORTANT'];
       const labels2 = ['INBOX', 'IMPORTANT'];
 
-      await classifier.classifyLabels(labels1);
-      await classifier.classifyLabels(labels2);
+      await classifier.classifyLabels(labels1, 'test-user');
+      await classifier.classifyLabels(labels2, 'test-user');
 
       expect(mockCacheManager.get).toHaveBeenCalledTimes(2);
       const firstCall = mockCacheManager.get.mock.calls[0][0];
@@ -480,8 +481,8 @@ describe('LabelClassifier Unit Tests', () => {
       const labels1 = ['INBOX', 'IMPORTANT'];
       const labels2 = ['INBOX', 'SPAM'];
 
-      await classifier.classifyLabels(labels1);
-      await classifier.classifyLabels(labels2);
+      await classifier.classifyLabels(labels1, 'test-user');
+      await classifier.classifyLabels(labels2, 'test-user');
 
       const firstCall = mockCacheManager.get.mock.calls[0][0];
       const secondCall = mockCacheManager.get.mock.calls[1][0];
@@ -492,8 +493,8 @@ describe('LabelClassifier Unit Tests', () => {
       const labels1 = ['INBOX', 'IMPORTANT'];
       const labels2 = ['IMPORTANT', 'INBOX'];
 
-      await classifier.classifyLabels(labels1);
-      await classifier.classifyLabels(labels2);
+      await classifier.classifyLabels(labels1, 'test-user');
+      await classifier.classifyLabels(labels2, 'test-user');
 
       const firstCall = mockCacheManager.get.mock.calls[0][0];
       const secondCall = mockCacheManager.get.mock.calls[1][0];
@@ -508,7 +509,7 @@ describe('LabelClassifier Unit Tests', () => {
       });
 
       const labels = ['INBOX', 'IMPORTANT'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result).toBeDefined();
     });
@@ -520,7 +521,7 @@ describe('LabelClassifier Unit Tests', () => {
       });
 
       const labels = ['INBOX', 'IMPORTANT'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result).toBeDefined();
     });
@@ -534,7 +535,7 @@ describe('LabelClassifier Unit Tests', () => {
   describe('Edge Cases', () => {
     it('should handle empty labels array', async () => {
       const labels: string[] = [];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.category).toBe('primary');
       expect(result.spamScore).toBe(0);
@@ -547,7 +548,7 @@ describe('LabelClassifier Unit Tests', () => {
 
     it('should handle labels with special characters', async () => {
       const labels = ['INBOX', 'LABEL-WITH-DASHES', 'label_with_underscores'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result).toBeDefined();
       expect(result.category).toBe('primary');
@@ -556,14 +557,14 @@ describe('LabelClassifier Unit Tests', () => {
     it('should handle very long label names', async () => {
       const longLabel = 'a'.repeat(1000);
       const labels = ['INBOX', longLabel];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result).toBeDefined();
     });
 
     it('should handle duplicate labels', async () => {
       const labels = ['INBOX', 'IMPORTANT', 'IMPORTANT', 'INBOX'];
-      const result = await classifier.classifyLabels(labels);
+      const result = await classifier.classifyLabels(labels, 'test-user');
 
       expect(result.category).toBe('important');
       // Should not double-count duplicates

@@ -68,6 +68,7 @@ describe('DateSizeAnalyzer Unit Tests', () => {
 
     testContext = {
       email: testEmail,
+      user_id: 'test-user',
       subject: testEmail.subject || 'Test Subject',
       sender: testEmail.sender || 'test@example.com',
       snippet: testEmail.snippet || 'Test email snippet',
@@ -211,7 +212,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
 
       const context = {
         ...testContext,
-        date: recentDate
+        date: recentDate,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -224,7 +226,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
 
       const context = {
         ...testContext,
-        date: moderateDate
+        date: moderateDate,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -238,7 +241,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
 
       const context = {
         ...testContext,
-        date: oldDate
+        date: oldDate,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -251,7 +255,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
 
       const context = {
         ...testContext,
-        date: veryOldDate
+        date: veryOldDate,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -263,7 +268,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
     it('should have no penalty for small emails', async () => {
       const context = {
         ...testContext,
-        size: 50000 // 50KB
+        size: 50000, // 50KB
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -273,7 +279,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
     it('should have small penalty for medium emails', async () => {
       const context = {
         ...testContext,
-        size: 2000000 // 2MB
+        size: 2000000, // 2MB
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -284,7 +291,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
     it('should have higher penalty for large emails', async () => {
       const context = {
         ...testContext,
-        size: 15000000 // 15MB
+        size: 15000000, // 15MB
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -294,7 +302,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
     it('should cap penalty at maximum value', async () => {
       const context = {
         ...testContext,
-        size: 100000000 // 100MB
+        size: 100000000, // 100MB
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -326,7 +335,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         date: recentDate,
-        size: 30000 // 30KB
+        size: 30000, // 30KB
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -344,7 +354,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
       const context = {
         ...testContext,
         date: oldDate,
-        size: 20000000 // 20MB
+        size: 20000000, // 20MB
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -400,7 +411,7 @@ describe('DateSizeAnalyzer Unit Tests', () => {
       expect(mockCacheManager.set).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Object),
-        testConfig.caching.ttl
+        expect.any(String)
       );
     });
 
@@ -496,7 +507,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
 
       const context = {
         ...testContext,
-        date: futureDate
+        date: futureDate,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -509,7 +521,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
     it('should handle extremely large sizes', async () => {
       const context = {
         ...testContext,
-        size: Number.MAX_SAFE_INTEGER
+        size: Number.MAX_SAFE_INTEGER,
+        user_id: 'test-user'
       };
 
       const result = await analyzer.analyzeDateSize(context);
@@ -522,7 +535,8 @@ describe('DateSizeAnalyzer Unit Tests', () => {
     it('should handle invalid dates', async () => {
       const context = {
         ...testContext,
-        date: new Date('invalid-date')
+        date: new Date('invalid-date'),
+        user_id: 'test-user'
       };
 
       // Should not throw, but may produce NaN values

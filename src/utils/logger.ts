@@ -49,9 +49,14 @@ const redactPII = winston.format((info) => {
     fullMessage = fullMessage.replace(pattern, replacement);
   });
   
-  // Convert back to object
-  const redactedInfo = JSON.parse(fullMessage);
-  return redactedInfo;
+  // Convert back to object, but only if valid JSON
+  try {
+    const redactedInfo = JSON.parse(fullMessage);
+    return redactedInfo;
+  } catch (e) {
+    // If parsing fails, just return the original info object
+    return info;
+  }
 });
 
 // Create transports array
