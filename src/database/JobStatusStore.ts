@@ -28,14 +28,10 @@ export class JobStatusStore {
     });
   }
 
-  static getInstance(): JobStatusStore {
+  static getInstance(dbManager?: DatabaseManager): JobStatusStore {
     if (!this.instance) {
-      // Ensure DatabaseManager singleton exists first
-      // Check if the singleton instance exists
-      if (!DatabaseManager.getInstance()) {
-        throw new Error('DatabaseManager: No singleton instance exists. Call getInstance() first.');
-      }
-      this.instance = new JobStatusStore();
+      // If a dbManager is provided, use it for the singleton (for test isolation)
+      this.instance = new JobStatusStore(dbManager);
       logger.debug(`JobStatusStore singleton created with ID: ${this.instanceId}`, {
         timestamp: new Date().toISOString(),
         instanceId: this.instanceId
@@ -270,5 +266,10 @@ export class JobStatusStore {
       logger.error(`Failed to clean up old jobs: ${error}`);
       throw error;
     }
+  }
+
+  static resetInstance(): void {
+    this.instance = null;
+    this.instanceId = Math.random().toString(36).substr(2, 9);
   }
 }

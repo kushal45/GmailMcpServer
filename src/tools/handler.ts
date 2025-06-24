@@ -231,6 +231,7 @@ async function handleSearchEmails(args: any, context: ToolContext) {
 }
 
 async function handleCategorizeEmails(args: any, context: ToolContext) {
+  const userContext = args.user_context as UserContext;
   if (!await context.authManager.hasValidAuth()) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
@@ -248,11 +249,12 @@ async function handleCategorizeEmails(args: any, context: ToolContext) {
         {
             forceRefresh: args.force_refresh || false,
             year: args.year
-        }
+        },
+        userContext.user_id
     );
 
     // Enqueue the job for a worker to pick up
-    await context.jobQueue.addJob(jobId);
+    await context.jobQueue.addJob(jobId,userContext.user_id);
 
     // 3. Immediate Response
     return {

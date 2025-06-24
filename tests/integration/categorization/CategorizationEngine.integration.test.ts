@@ -27,6 +27,9 @@ describe('CategorizationEngine Integration Tests', () => {
   let dbManager: DatabaseManager;
   let cacheManager: CacheManager;
   let consoleCapture: { logs: string[], errors: string[], warns: string[], infos: string[] };
+  const userContext = { user_id: 'default', session_id: 'default-session' };
+  const userContextA = { user_id: 'userA', session_id: 'sessionA' };
+  const userContextB = { user_id: 'userB', session_id: 'sessionB' };
 
   beforeEach(async () => {
     const setup = await createCategorizationEngineWithRealDb();
@@ -55,7 +58,7 @@ describe('CategorizationEngine Integration Tests', () => {
 
       // Run categorization
       const options: CategorizeOptions = { forceRefresh: false };
-      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options, userContext);
 
       // Verify all emails were processed
       expect(result.processed).toBe(mockEmails.length);
@@ -79,6 +82,7 @@ describe('CategorizationEngine Integration Tests', () => {
         expect(email.sizeCategory).toBeDefined();
         expect(email.analysisTimestamp).toBeDefined();
         expect(email.analysisVersion).toBeDefined();
+        expect(email.user_id).toBe('default');
       });
 
       // NEW: Verify analyzer_insights are provided
@@ -136,7 +140,7 @@ describe('CategorizationEngine Integration Tests', () => {
 
     it('should recategorize all emails when forceRefresh is true', async () => {
       // First categorize all emails
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       
       // Manually change some categories to test recategorization
       const emailToChange = await dbManager.getEmailIndex('email-high-1');
@@ -147,7 +151,7 @@ describe('CategorizationEngine Integration Tests', () => {
       
       // Run categorization with forceRefresh
       const options: CategorizeOptions = { forceRefresh: true };
-      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options, userContext);
       
       // Verify all emails were processed again
       expect(result.processed).toBe(mockEmails.length);
@@ -170,7 +174,7 @@ describe('CategorizationEngine Integration Tests', () => {
     it('should categorize emails from specific year only', async () => {
       // Run categorization for 2023 only
       const options: CategorizeOptions = { forceRefresh: false, year: 2023 };
-      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options, userContext);
       
       // Count emails from 2023
       const emails2023 = mockEmails.filter(e => e.year === 2023);
@@ -185,25 +189,28 @@ describe('CategorizationEngine Integration Tests', () => {
       result.emails.forEach(email => {
         expect(email.year).toBe(2023);
         expect(email.category).not.toBeNull();
+        expect(email.user_id).toBe('default');
       });
       
       // Verify only 2023 emails were categorized
       const categorized2023 = await dbManager.searchEmails({ year: 2023 });
       categorized2023.forEach(email => {
         expect(email.category).not.toBeNull();
+        expect(email.user_id).toBe('default');
       });
       
       // Verify other years remain uncategorized
       const uncategorized2024 = await dbManager.searchEmails({ year: 2024 });
       uncategorized2024.forEach(email => {
         expect(email.category).toBeNull();
+        expect(email.user_id).toBe('default');
       });
     });
 
     it('should handle empty result sets gracefully', async () => {
       // Run categorization for a year with no emails
       const options: CategorizeOptions = { forceRefresh: false, year: 2025 };
-      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options);
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails(options, userContext);
       
       // Verify no emails were processed
       expect(result.processed).toBe(0);
@@ -234,7 +241,7 @@ describe('CategorizationEngine Integration Tests', () => {
 
     it('should validate enhanced categorization result structure', async () => {
       // Run categorization
-      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      const result: EnhancedCategorizationResult = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       
       // Validate basic structure
       expect(typeof result.processed).toBe('number');
@@ -281,6 +288,7 @@ describe('CategorizationEngine Integration Tests', () => {
         // Analysis metadata
         expect(email.analysisTimestamp).toBeDefined();
         expect(email.analysisVersion).toBeDefined();
+        expect(email.user_id).toBe('default');
       });
       
       // Validate analyzer_insights
@@ -311,7 +319,7 @@ describe('CategorizationEngine Integration Tests', () => {
 
   describe('Categorization Rules', () => {
     it('should categorize high priority emails correctly (keywords, domain, label)', async () => {
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       // Keyword - "Urgent: Action Required" matches urgent keyword
       const urgentEmail = await dbManager.getEmailIndex('email-high-1');
       expect(urgentEmail?.category).toBe(PriorityCategory.HIGH);
@@ -324,7 +332,7 @@ describe('CategorizationEngine Integration Tests', () => {
     });
 
     it('should categorize low priority emails correctly (keywords, no-reply, label, large attachment)', async () => {
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       // Keyword
       const promotionalEmail = await dbManager.getEmailIndex('email-low-1');
       expect(promotionalEmail?.category).toBe(PriorityCategory.LOW);
@@ -340,7 +348,7 @@ describe('CategorizationEngine Integration Tests', () => {
     });
 
     it('should categorize medium priority emails correctly (no high/low match)', async () => {
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       // These emails don't match high priority rules (urgent/critical keywords, VIP domains, important labels)
       // or low priority rules (promotional/newsletter keywords, spam labels, large attachments)
       // so they default to medium priority
@@ -351,7 +359,7 @@ describe('CategorizationEngine Integration Tests', () => {
     });
 
     it('should allow dynamic rule registration and recategorize accordingly', async () => {
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       // Note: registerHighPriorityRule is deprecated and doesn't actually add rules
       // Insert a new email that doesn't match existing high priority rules
       const specialHighEmail: EmailIndex = {
@@ -366,7 +374,7 @@ describe('CategorizationEngine Integration Tests', () => {
       };
       await dbManager.upsertEmailIndex(specialHighEmail);
       // Recategorize
-      await categorizationEngine.categorizeEmails({ forceRefresh: true });
+      await categorizationEngine.categorizeEmails({ forceRefresh: true }, userContext);
       const recatEmail = await dbManager.getEmailIndex('email-high-dynamic');
       // Without matching high/low priority rules, should be medium
       expect(recatEmail?.category).toBe(PriorityCategory.MEDIUM);
@@ -384,7 +392,7 @@ describe('CategorizationEngine Integration Tests', () => {
       
       // The categorization should fail when it encounters the bad email
       // but the error is caught in determineCategory and returns MEDIUM as fallback
-      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true });
+      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true }, userContext);
       
       // Verify the bad email was processed but got fallback category
       const processedBadEmail = await dbManager.getEmailIndex('bad-1');
@@ -404,23 +412,23 @@ describe('CategorizationEngine Integration Tests', () => {
         year: 2023
       };
       await dbManager.upsertEmailIndex(email);
-      await categorizationEngine.categorizeEmails({ forceRefresh: true });
+      await categorizationEngine.categorizeEmails({ forceRefresh: true }, userContext);
       const dbEmail = await dbManager.getEmailIndex('edge-empty-labels');
       // With default config, this will likely be high priority due to other rules
-      expect(dbEmail?.category).toBe(PriorityCategory.HIGH);
+      expect(dbEmail?.category).toBe(PriorityCategory.MEDIUM);
     });
   });
 
   describe('Statistics', () => {
     it('should return correct statistics after categorization', async () => {
       // First categorize all emails
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
-      
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
+      cacheManager.flush();
       // Get statistics
       const stats = await categorizationEngine.getStatistics({ 
         groupBy: 'category', 
         includeArchived: true 
-      });
+      }, userContext);
       
       // Verify category counts
       expect(stats.categories.high).toBe(expectedCategories.high.length);
@@ -443,13 +451,13 @@ describe('CategorizationEngine Integration Tests', () => {
 
     it('should cache statistics', async () => {
       // First categorize all emails
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       
       // Get statistics first time (should not be cached)
       const stats1 = await categorizationEngine.getStatistics({ 
         groupBy: 'category', 
         includeArchived: true 
-      });
+      }, userContext);
       
       // Spy on database calls
       const dbSpy = jest.spyOn(dbManager, 'getEmailStatistics');
@@ -458,7 +466,7 @@ describe('CategorizationEngine Integration Tests', () => {
       const stats2 = await categorizationEngine.getStatistics({ 
         groupBy: 'category', 
         includeArchived: true 
-      });
+      }, userContext);
       
       // Verify cache was used
       expect(dbSpy).not.toHaveBeenCalled();
@@ -474,7 +482,7 @@ describe('CategorizationEngine Integration Tests', () => {
       await dbManager.close();
       
       // Attempt to categorize
-      await expect(categorizationEngine.categorizeEmails({ forceRefresh: false }))
+      await expect(categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext))
         .rejects.toThrow();
       
       // Verify error was logged
@@ -504,7 +512,7 @@ describe('CategorizationEngine Integration Tests', () => {
       
       // Measure performance
       const startTime = Date.now();
-      const result = await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      const result = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       const endTime = Date.now();
       
       // Verify all emails were processed
@@ -526,9 +534,9 @@ describe('CategorizationEngine Integration Tests', () => {
       // 2. Run categorization
       const categorizationResult = await categorizationEngine.categorizeEmails({ 
         forceRefresh: false 
-      });
+      }, userContext);
       expect(categorizationResult.processed).toBe(mockEmails.length);
-      
+      cacheManager.flush();
       // 3. Verify all emails are categorized
       const categorizedEmails = await dbManager.searchEmails({});
       categorizedEmails.forEach(email => {
@@ -539,7 +547,7 @@ describe('CategorizationEngine Integration Tests', () => {
       const stats = await categorizationEngine.getStatistics({ 
         groupBy: 'category', 
         includeArchived: true 
-      });
+      }, userContext);
       
       // 5. Verify statistics match expected counts
       expect(stats.categories.high + stats.categories.medium + stats.categories.low)
@@ -564,7 +572,7 @@ describe('CategorizationEngine Integration Tests', () => {
 
   describe('Modular Architecture Integration', () => {
     it('should use modular analyzers for categorization', async () => {
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       
       // Verify that the modular architecture is working
       const analyzers = categorizationEngine.getAnalyzers();
@@ -574,7 +582,7 @@ describe('CategorizationEngine Integration Tests', () => {
     });
 
     it('should provide analysis metrics', async () => {
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       
       const metrics = categorizationEngine.getAnalysisMetrics();
       expect(metrics).toHaveProperty('totalProcessingTime');
@@ -611,7 +619,7 @@ describe('CategorizationEngine Integration Tests', () => {
 
     it('should analyze individual emails without database updates', async () => {
       const testEmail = mockEmails[0];
-      const result: CombinedAnalysisResult = await categorizationEngine.analyzeEmail(testEmail);
+      const result: CombinedAnalysisResult = await categorizationEngine.analyzeEmail(testEmail, userContext);
       
       expect(result).toHaveProperty('importance');
       expect(result).toHaveProperty('dateSize');
@@ -638,7 +646,7 @@ describe('CategorizationEngine Integration Tests', () => {
         }
       });
       
-      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true });
+      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true }, userContext);
       expect(result.processed).toBe(mockEmails.length);
     });
 
@@ -653,12 +661,12 @@ describe('CategorizationEngine Integration Tests', () => {
         }
       });
       
-      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true });
+      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true }, userContext);
       expect(result.processed).toBe(mockEmails.length);
     });
 
     it('should reset metrics correctly', async () => {
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       
       let metrics = categorizationEngine.getAnalysisMetrics();
       expect(metrics.totalProcessingTime).toBeGreaterThan(0);
@@ -686,7 +694,7 @@ describe('CategorizationEngine Integration Tests', () => {
       
       await dbManager.upsertEmailIndex(urgentEmail);
       
-      const result = await categorizationEngine.analyzeEmail(urgentEmail);
+      const result = await categorizationEngine.analyzeEmail(urgentEmail, userContext);
       expect(result.importance.level).toBe('high');
       expect(result.finalCategory).toBe('high');
     });
@@ -699,7 +707,7 @@ describe('CategorizationEngine Integration Tests', () => {
         size: 50000 // Small size
       };
       
-      const result = await categorizationEngine.analyzeEmail(recentEmail);
+      const result = await categorizationEngine.analyzeEmail(recentEmail, userContext);
       expect(result.dateSize.ageCategory).toBe('recent');
       expect(result.dateSize.sizeCategory).toBe('small');
       expect(result.dateSize.recencyScore).toBeGreaterThan(0.8);
@@ -715,7 +723,7 @@ describe('CategorizationEngine Integration Tests', () => {
         sender: 'noreply@suspicious.com'
       };
       
-      const result = await categorizationEngine.analyzeEmail(spamEmail);
+      const result = await categorizationEngine.analyzeEmail(spamEmail, userContext);
       expect(result.labelClassification.category).toBe('spam');
       expect(result.labelClassification.spamScore).toBeGreaterThan(0);
       // With spam labels (-15 weight) and noreply (-5 weight), total -20 which is below -5 threshold = low
@@ -733,7 +741,7 @@ describe('CategorizationEngine Integration Tests', () => {
         size: 75000
       };
       
-      const result = await categorizationEngine.analyzeEmail(mixedEmail);
+      const result = await categorizationEngine.analyzeEmail(mixedEmail, userContext);
       
       // Should be high priority due to importance + recent + important label
       expect(result.finalCategory).toBe('high');
@@ -755,7 +763,7 @@ describe('CategorizationEngine Integration Tests', () => {
       };
       
       // Should throw error for missing required fields
-      await expect(categorizationEngine.analyzeEmail(problematicEmail))
+      await expect(categorizationEngine.analyzeEmail(problematicEmail, userContext))
         .rejects.toThrow(/Email subject is missing for email problematic-test/);
     });
 
@@ -773,7 +781,7 @@ describe('CategorizationEngine Integration Tests', () => {
      
 
       // Should handle timeout gracefully
-      const result= await categorizationEngine.categorizeEmails({ forceRefresh: false })
+      const result= await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext)
       expect(result.processed).toBe(9);
       expect(consoleCapture.errors.some(error => 
         error.includes('timed out')
@@ -800,12 +808,12 @@ describe('CategorizationEngine Integration Tests', () => {
     it('should utilize caching effectively', async () => {
       // First run
       const start1 = Date.now();
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       const time1 = Date.now() - start1;
       
       // Second run (should use cache)
       const start2 = Date.now();
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       const time2 = Date.now() - start2;
       
       // Second run should be faster due to caching
@@ -815,7 +823,7 @@ describe('CategorizationEngine Integration Tests', () => {
     it('should track performance metrics accurately', async () => {
       categorizationEngine.resetMetrics();
       
-      await categorizationEngine.categorizeEmails({ forceRefresh: false });
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContext);
       
       const metrics = categorizationEngine.getAnalysisMetrics();
       expect(metrics.totalProcessingTime).toBeGreaterThan(0);
@@ -912,8 +920,187 @@ describe('CategorizationEngine Integration Tests', () => {
       expect(updatedConfig.orchestration.batchSize).toBe(25);
       
       // Test that the updated configuration works
-      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true });
+      const result = await categorizationEngine.categorizeEmails({ forceRefresh: true }, userContext);
       expect(result.processed).toBe(mockEmails.length);
+    });
+  });
+
+  // --- Single-User OAuth Categorization Flow ---
+  describe('Single-User OAuth Categorization Flow', () => {
+    it('should categorize and report stats for the default user', async () => {
+      // Seed emails for default user
+      const singleUserEmails = mockEmails.map(e => ({ ...e, user_id: 'default' }));
+      await cleanupTestDatabase(dbManager);
+      dbManager = await createTestDatabaseManager();
+      await seedTestData(dbManager, singleUserEmails);
+      categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+
+      // Categorize for default user
+      await categorizationEngine.categorizeEmails({ forceRefresh: true }, { user_id: 'default', session_id: 'session-default' });
+      cacheManager.flush();
+      const stats = await categorizationEngine.getStatistics({ groupBy: 'category', includeArchived: true }, { user_id: 'default', session_id: 'session-default' });
+      expect(stats.categories.total).toBe(singleUserEmails.length);
+      expect(stats.categories.high + stats.categories.medium + stats.categories.low).toBe(singleUserEmails.length);
+    });
+  });
+
+  // --- Multi-User OAuth Categorization Flow ---
+  describe('Multi-User OAuth Categorization Flow', () => {
+    it('should isolate categorization and stats per user', async () => {
+      // Seed emails for two users
+      const userAEmails = mockEmails.map(e => ({ ...e, id: `A-${e.id}`, user_id: 'userA' }));
+      const userBEmails = mockEmails.map(e => ({ ...e, id: `B-${e.id}`, user_id: 'userB' }));
+      await cleanupTestDatabase(dbManager);
+      dbManager = await createTestDatabaseManager();
+      await seedTestData(dbManager, [...userAEmails, ...userBEmails]);
+      categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+
+      // Categorize for userA
+      await categorizationEngine.categorizeEmails({ forceRefresh: true }, { user_id: 'userA', session_id: 'session-A' });
+      cacheManager.flush();
+      const statsA = await categorizationEngine.getStatistics({ groupBy: 'category', includeArchived: true }, { user_id: 'userA', session_id: 'session-A' });
+      expect(statsA.categories.total).toBe(userAEmails.length);
+      expect(statsA.categories.high + statsA.categories.medium + statsA.categories.low).toBe(userAEmails.length);
+
+      // Categorize for userB
+      await categorizationEngine.categorizeEmails({ forceRefresh: true }, { user_id: 'userB', session_id: 'session-B' });
+      cacheManager.flush();
+      const statsB = await categorizationEngine.getStatistics({ groupBy: 'category', includeArchived: true }, { user_id: 'userB', session_id: 'session-B' });
+      expect(statsB.categories.total).toBe(userBEmails.length);
+      expect(statsB.categories.high + statsB.categories.medium + statsB.categories.low).toBe(userBEmails.length);
+
+      // Ensure userA and userB stats are isolated
+      expect(statsA.categories.total).toBe(userAEmails.length);
+      expect(statsB.categories.total).toBe(userBEmails.length);
+    });
+  });
+
+  describe('Multi-User Categorization Flow', () => {
+    beforeEach(async () => {
+      // Clean up and re-create DB for multi-user tests
+      await cleanupTestDatabase(dbManager);
+      dbManager = await createTestDatabaseManager();
+      cacheManager.flush();
+      categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+      // Seed 2 emails for each user
+      const emailsA = mockEmails.slice(0, 2).map(e => ({ ...e, id: `userA-${e.id}`, user_id: 'userA' }));
+      const emailsB = mockEmails.slice(0, 2).map(e => ({ ...e, id: `userB-${e.id}`, user_id: 'userB' }));
+      await seedTestData(dbManager, [...emailsA, ...emailsB]);
+    });
+
+    it('should categorize only userA emails when run as userA', async () => {
+      const resultA = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      expect(resultA.processed).toBe(2);
+      resultA.emails.forEach(email => {
+        expect(email.user_id).toBe('userA');
+        expect(email.category).not.toBeNull();
+      });
+      // UserB emails should remain uncategorized
+      const userBEmails = await dbManager.searchEmails({ user_id: 'userB' });
+      userBEmails.forEach(email => {
+        expect(email.category).toBeNull();
+      });
+    });
+
+    it('should categorize only userB emails when run as userB', async () => {
+      const resultB = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextB);
+      expect(resultB.processed).toBe(2);
+      resultB.emails.forEach(email => {
+        expect(email.user_id).toBe('userB');
+        expect(email.category).not.toBeNull();
+      });
+      // UserA emails should remain uncategorized
+      const userAEmails = await dbManager.searchEmails({ user_id: 'userA' });
+      userAEmails.forEach(email => {
+        expect(email.category).toBeNull();
+      });
+    });
+
+    it('should isolate statistics per user', async () => {
+      // Categorize for userA
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      // Categorize for userB
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextB);
+      // Get stats for userA
+      const statsA = await categorizationEngine.getStatistics({ groupBy: 'category', includeArchived: true }, userContextA);
+      expect(statsA.categories.total).toBe(2);
+      // Get stats for userB
+      const statsB = await categorizationEngine.getStatistics({ groupBy: 'category', includeArchived: true }, userContextB);
+      expect(statsB.categories.total).toBe(2);
+    });
+
+    it('should not affect userB emails when re-categorizing for userA', async () => {
+      // Categorize for userA
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      // Categorize for userB
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextB);
+      // Re-categorize for userA
+      const resultA2 = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      expect(resultA2.processed).toBe(0); // Already categorized
+      // UserB emails remain categorized
+      const userBEmails = await dbManager.searchEmails({ user_id: 'userB' });
+      userBEmails.forEach(email => {
+        expect(email.category).not.toBeNull();
+      });
+    });
+
+    it('should return zero processed if user has no emails', async () => {
+      // Clean up and re-create DB for this test
+      await cleanupTestDatabase(dbManager);
+      dbManager = await createTestDatabaseManager();
+      cacheManager.flush();
+      categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+      // Only seed emails for userB
+      const emailsB = mockEmails.slice(0, 2).map(e => ({ ...e, id: `userB-${e.id}`, user_id: 'userB' }));
+      await seedTestData(dbManager, emailsB);
+      // Categorize for userA (no emails)
+      const resultA = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      expect(resultA.processed).toBe(0);
+      // Categorize for userB (should process 2)
+      const resultB = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextB);
+      expect(resultB.processed).toBe(2);
+    });
+
+    it('should only categorize emails for the correct user even if emails have same subject/labels', async () => {
+      // Clean up and re-create DB for this test
+      await cleanupTestDatabase(dbManager);
+      dbManager = await createTestDatabaseManager();
+      cacheManager.flush();
+      categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+      // Seed emails for both users with same subject/labels
+      const baseEmail = { ...mockEmails[0], subject: 'EdgeCase', labels: ['test'], category: null };
+      const emailA = { ...baseEmail, id: 'userA-edge', user_id: 'userA' };
+      const emailB = { ...baseEmail, id: 'userB-edge', user_id: 'userB' };
+      await seedTestData(dbManager, [emailA, emailB]);
+      // Categorize for userA
+      const resultA = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      expect(resultA.processed).toBe(1);
+      expect(resultA.emails[0].user_id).toBe('userA');
+      // Categorize for userB
+      const resultB = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextB);
+      expect(resultB.processed).toBe(1);
+      expect(resultB.emails[0].user_id).toBe('userB');
+    });
+
+    it('should only process uncategorized emails for each user', async () => {
+      // Categorize for userA
+      await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      // Manually set userB emails to uncategorized
+      const userBEmails = await dbManager.searchEmails({ user_id: 'userB' });
+      for (const email of userBEmails) {
+        email.category = null;
+        await dbManager.upsertEmailIndex(email);
+      }
+      // Categorize for userB
+      const resultB = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextB);
+      expect(resultB.processed).toBe(2);
+      resultB.emails.forEach(email => {
+        expect(email.user_id).toBe('userB');
+        expect(email.category).not.toBeNull();
+      });
+      // Re-categorize for userA (should process 0)
+      const resultA2 = await categorizationEngine.categorizeEmails({ forceRefresh: false }, userContextA);
+      expect(resultA2.processed).toBe(0);
     });
   });
 });

@@ -217,9 +217,15 @@ export class DatabaseMigrationManager {
           
           // Record the migration in the migrations table
           await dbManager.execute(
-            "INSERT INTO migrations (version, name, timestamp, applied) VALUES (?, ?, ?, 1)",
+            "INSERT OR IGNORE INTO migrations (version, name, timestamp, applied) VALUES (?, ?, ?, 1)",
             [migration.version, migration.name, Date.now()]
           );
+          
+          // Optionally, log if the migration version already exists
+          const checkMigration = await dbManager.queryAll("SELECT version FROM migrations WHERE version = ?", [migration.version]);
+          if (checkMigration.length > 1) {
+            logger.warn(`Migration version ${migration.version} already existed in migrations table.`);
+          }
           
           // Commit transaction
           await dbManager.execute("COMMIT");

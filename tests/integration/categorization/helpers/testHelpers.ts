@@ -7,7 +7,7 @@ import { CategorizationEngine } from '../../../../src/categorization/Categorizat
 import { CategorizationWorker } from '../../../../src/categorization/CategorizationWorker.js';
 import { JobQueue } from '../../../../src/database/JobQueue.js';
 import { JobStatusStore } from '../../../../src/database/JobStatusStore.js';
-import { Job, JobStatus } from '../../../../src/database/jobStatusTypes.js';
+import { Job, JobStatus } from '../../../../src/types/index.js';
 import { CategorizationSystemConfig } from '../../../../src/categorization/config/CategorizationConfig.js';
 import { AnalysisMetrics } from '../../../../src/categorization/types.js';
 import fs from 'fs/promises';
@@ -15,6 +15,7 @@ import path from 'path';
 import os from 'os';
 import { logger } from '../../../../src/utils/logger.js';
 import { Logger } from 'winston';
+import { DatabaseMigrationManager } from '../../../../src/database/DatabaseMigrationManager.js';
 
 // Create test database manager
 let testDbPath: string;
@@ -28,8 +29,58 @@ export async function createTestDatabaseManager(): Promise<DatabaseManager> {
   // Set the storage path environment variable to our test directory
   process.env.STORAGE_PATH = testDbDir;
   
-  const dbManager = DatabaseManager.getInstance();
-  await dbManager.initialize(testDbPath);
+  // Always create a new DatabaseManager instance for each test
+  const dbManager = new DatabaseManager(undefined);
+  await dbManager.initialize(testDbPath, true);
+
+  // Log DB path and instance ID before migration
+  console.log('[DIAGNOSTIC] (before migration) DB path:', testDbPath);
+  console.log('[DIAGNOSTIC] (before migration) DB instance ID:', dbManager.getInstanceId());
+  try {
+    const preColumns = await dbManager.queryAll("PRAGMA table_info(email_index)");
+    console.log('[DIAGNOSTIC] (before migration) email_index columns:', preColumns.map((col: any) => col.name));
+  } catch (e) {
+    console.log('[DIAGNOSTIC] (before migration) email_index columns: ERROR', e);
+  }
+  try {
+    const preMigrations = await dbManager.queryAll("SELECT * FROM migrations");
+    console.log('[DIAGNOSTIC] (before migration) migrations table:', preMigrations);
+  } catch (e) {
+    console.log('[DIAGNOSTIC] (before migration) migrations table: ERROR', e);
+  }
+
+  // Check if migrations table exists and if migration version 1 is present
+  let shouldRunMigration = true;
+  try {
+    const tables = await dbManager.queryAll("SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'");
+    if (tables.length > 0) {
+      const versionRows = await dbManager.queryAll("SELECT version FROM migrations WHERE version = 1");
+      if (versionRows.length > 0) {
+        shouldRunMigration = false;
+        console.log('[DIAGNOSTIC] Migration version 1 already applied, skipping migration.');
+      }
+    }
+  } catch (e) {
+    // If any error, assume migration needs to run
+    shouldRunMigration = true;
+  }
+
+  if (shouldRunMigration) {
+    const migrationManager = DatabaseMigrationManager.getInstance();
+    await migrationManager.initialize();
+    await migrationManager.migrateDatabase(dbManager);
+    console.log('[DIAGNOSTIC] Ran migration for test DB.');
+  }
+
+  // Log schema and migrations table after migration
+  const columns = await dbManager.queryAll("PRAGMA table_info(email_index)");
+  console.log('[DIAGNOSTIC] (after migration) email_index columns:', columns.map((col: any) => col.name));
+  try {
+    const postMigrations = await dbManager.queryAll("SELECT * FROM migrations");
+    console.log('[DIAGNOSTIC] (after migration) migrations table:', postMigrations);
+  } catch (e) {
+    console.log('[DIAGNOSTIC] (after migration) migrations table: ERROR', e);
+  }
   
   return dbManager;
 }
@@ -39,22 +90,27 @@ export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<v
   if (dbManager) {
     await dbManager.close();
   }
-  
-  // Remove test database directory
+  // Remove test database directory and file
   if (testDbDir) {
     try {
       await fs.rm(testDbDir, { recursive: true, force: true });
+      console.log('[DIAGNOSTIC] Cleaned up test DB directory:', testDbDir);
     } catch (error) {
-      console.error('Failed to cleanup test database:', error);
+      console.error('[DIAGNOSTIC] Failed to cleanup test database:', error);
     }
   }
 }
 
 // Seed test data into database
 export async function seedTestData(dbManager: DatabaseManager, emails: EmailIndex[]): Promise<void> {
+  // Set user_id to 'default' for all emails if not already set
+  const emailsWithUserId = emails.map(email => ({
+    ...email,
+    user_id: email.user_id || 'default'
+  }));
   // Use bulk insert for efficiency
-  if (emails.length > 0) {
-    await dbManager.bulkUpsertEmailIndex(emails);
+  if (emailsWithUserId.length > 0) {
+    await dbManager.bulkUpsertEmailIndex(emailsWithUserId);
   }
 }
 
@@ -880,12 +936,15 @@ export async function createWorkerWithRealComponents(): Promise<{
   cacheManager: CacheManager;
 }> {
   const dbManager = await createTestDatabaseManager();
-  const jobStatusStore = JobStatusStore.getInstance();
+  // Reset JobStatusStore singleton for test isolation
+  JobStatusStore.resetInstance();
+  const jobStatusStore = JobStatusStore.getInstance(dbManager);
   await jobStatusStore.initialize();
   
   const jobQueue = new JobQueue();
   const cacheManager = new CacheManager();
   const categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+  // Pass user_id: 'default' for single-user OAuth
   const worker = new CategorizationWorker(jobQueue, categorizationEngine);
   
   return {

@@ -1,4 +1,3 @@
-
 import {JobStatusStore,JobQueue } from '../database/index.js';
 import { logger } from '../utils/logger.js';
 import { CategorizationEngine } from './CategorizationEngine.js';
@@ -35,7 +34,7 @@ export class CategorizationWorker {
     logger.info('Starting categorization worker', {
       timestamp: new Date().toISOString(),
       jobStatusStoreExists: !!this.jobStatusStore,
-      categorizationEngineExists: !!this.categorizationEngine
+      categorizationEngineExists: !!this.categorizationEngine,
     });
     this.processNextJob();
   }
@@ -57,8 +56,8 @@ export class CategorizationWorker {
     }
 
     try {
-      // Get next job from queue
-      const jobId = await this.jobQueue.retrieveJob();
+      // Get next job from queue for this user
+      const { jobId, userId } = await this.jobQueue.retrieveJob();
       
       if (!jobId) {
         // No jobs in queue, wait and check again
@@ -74,14 +73,15 @@ export class CategorizationWorker {
         logger.info(`CategorizationWorker validation passed for job: ${jobId}`, {
           timestamp: new Date().toISOString(),
           jobStatusStoreId: this.jobStatusStore.getInstanceId(),
-          categorizationEngineExists: !!this.categorizationEngine
+          categorizationEngineExists: !!this.categorizationEngine,
+          userId
         });
       } catch (error) {
         logger.error(`CategorizationWorker validation failed for job: ${jobId}`, { error });
         throw error;
       }
       
-      const job = await this.jobStatusStore.getJobStatus(jobId);
+      const job = await this.jobStatusStore.getJobStatus(jobId,userId);
       
       if (!job) {
         logger.error(`Job ${jobId} not found in database`);
@@ -106,10 +106,9 @@ export class CategorizationWorker {
         const categorizationResult = await this.categorizationEngine.categorizeEmails({
           forceRefresh,
           year
-        });
+        }, { user_id:userId??'default', session_id: 'default-session' });
         
         if (categorizationResult.processed === 0) {
-          //logger.info('No emails to categorize');
           await this.jobStatusStore.updateJobStatus(
             jobId,
             JobStatus.COMPLETED,

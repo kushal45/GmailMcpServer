@@ -265,7 +265,7 @@ export class CategorizationEngine {
   /**
    * Create analysis context from email data
    */
-  private createAnalysisContext(email: EmailIndex): EmailAnalysisContext {
+  private createAnalysisContext(email: EmailIndex,user_id:string='default'): EmailAnalysisContext {
     const subject = email?.subject?.toLowerCase() || '';
     const sender = email?.sender?.toLowerCase() || '';
     const snippet = email?.snippet?.toLowerCase() || '';
@@ -286,6 +286,7 @@ export class CategorizationEngine {
     return {
       email,
       subject,
+      user_id,
       sender,
       snippet,
       labels: email.labels || [],

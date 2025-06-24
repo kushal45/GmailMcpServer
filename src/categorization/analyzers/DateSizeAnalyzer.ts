@@ -175,7 +175,7 @@ export class DateSizeAnalyzer implements IDateSizeAnalyzer {
       dateStr = context.date.toISOString().split("T")[0]; // YYYY-MM-DD
     }
     const sizeCategory = this.categorizeBySize(context.size);
-    return `datesize:${context.email.id}:${dateStr}:${sizeCategory}`;
+    return `datesize:${context.userId}:${context.email.id}:${dateStr}:${sizeCategory}`;
   }
 
   /**
@@ -204,7 +204,7 @@ export class DateSizeAnalyzer implements IDateSizeAnalyzer {
 
     try {
       // Cache for longer since date/size analysis is relatively stable
-      this.cacheManager.set(cacheKey, result, this.config.caching.ttl);
+      this.cacheManager.set(cacheKey, result, String(this.config.caching.ttl));
     } catch (error) {
       logger.error("DateSizeAnalyzer: Cache storage failed", {
         cacheKey,

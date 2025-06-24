@@ -26,6 +26,7 @@ describe("EmailFetcher", () => {
     mockDbManager = createMockDatabase();
     mockAuthManager = {
       getGmailClient: jest.fn(),
+      getSessionId: jest.fn().mockReturnValue('test-session-123'),
     };
     mockCacheManager = {
       get: jest.fn(),
@@ -175,8 +176,17 @@ describe("EmailFetcher", () => {
       // Verify last sync time was updated
       expect(mockCacheManager.set).toHaveBeenCalledWith(
         "last_gmail_sync",
-        expect.any(Number),
         expect.any(Number)
+      );
+      // Optionally, check that the cache for emails was set
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        expect.stringContaining("list_emails_"),
+        expect.objectContaining({
+          emails: expect.any(Array),
+          timestamp: expect.any(Number),
+          total: expect.any(Number),
+        }),
+        undefined
       );
     });
 

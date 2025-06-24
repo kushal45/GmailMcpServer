@@ -24,6 +24,7 @@ import { CleanupAutomationEngine } from "./cleanup/CleanupAutomationEngine.js";
 import { setupFormatterRegistry } from "./archive/setupFormatters.js";
 import { FileAccessControlManager } from "./services/FileAccessControlManager.js";
 import { UserManager } from "./auth/UserManager.js";
+import { userDatabaseInitializer } from "./database/UserDatabaseInitializer.js";
 
 export class GmailMcpServer {
   private server: Server;
@@ -70,7 +71,7 @@ export class GmailMcpServer {
       this.cacheManager
     );
     this.searchEngine = new SearchEngine(
-      this.databaseManager,
+      userDatabaseInitializer,
       this.emailFetcher
     );
     const formatRegistry = setupFormatterRegistry()

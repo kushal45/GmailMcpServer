@@ -6,6 +6,7 @@ import { EmailIndex } from '../../types/index.js';
  */
 export interface EmailAnalysisContext extends AnalysisContext {
   email: EmailIndex;
+  user_id: string;
   subject: string;
   sender: string;
   snippet: string;

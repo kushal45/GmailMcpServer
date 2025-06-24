@@ -96,8 +96,9 @@ export class DatabaseManager {
   /**
    * Initialize the database
    * @param dbPath Optional path to use for the database file
+   * @param useMigrations If true, skip manual schema creation (for test/migration-managed DBs)
    */
-  async initialize(dbPath?: string): Promise<void> {
+  async initialize(dbPath?: string, useMigrations: boolean = false): Promise<void> {
     if (this.initialized) {
       logger.info('DatabaseManager already initialized', {
         instanceId: this.instanceId,
@@ -137,11 +138,12 @@ export class DatabaseManager {
       // Enable foreign keys
       await this.run("PRAGMA foreign_keys = ON");
 
-      // Create tables
-      await this.createTables();
-
-      // Run migration for existing databases
-      await this.migrateToAnalyzerSchema();
+      if (!useMigrations) {
+        // Create tables
+        await this.createTables();
+        // Run migration for existing databases
+        await this.migrateToAnalyzerSchema();
+      }
 
       this.initialized = true;
       
@@ -249,7 +251,8 @@ export class DatabaseManager {
         created_at INTEGER NOT NULL,
         started_at INTEGER,
         completed_at INTEGER,
-        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+        updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+        user_id TEXT
       )`,
 
         // Create index for job status queries
@@ -1619,6 +1622,7 @@ export class DatabaseManager {
       completed_at: row.completed_at
         ? new Date(row.completed_at * 1000)
         : undefined,
+      user_id: row.user_id,
     };
   }
 
