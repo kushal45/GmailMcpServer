@@ -114,7 +114,7 @@ export class CategorizationWorker {
             JobStatus.COMPLETED,
             {
               completed_at: new Date(),
-              results: { message: 'No emails to categorize' ,emailIds:[]}
+              results: { processed: 0, message: 'No emails to categorize', emailIds: [] }
             }
           );
           this.processNextJob();

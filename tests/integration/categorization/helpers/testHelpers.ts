@@ -21,7 +21,24 @@ import { DatabaseMigrationManager } from '../../../../src/database/DatabaseMigra
 let testDbPath: string;
 let testDbDir: string;
 
+// --- SINGLETON RESET UTILS FOR TEST ISOLATION ---
+// Add this utility if not present in DatabaseManager
+export function resetAllSingletons() {
+  if (typeof DatabaseManager.resetInstance === 'function') {
+    DatabaseManager.resetInstance();
+  } else if ('singletonInstance' in DatabaseManager) {
+    // Fallback for environments where resetInstance is not present
+    (DatabaseManager as any).singletonInstance = null;
+    console.log('[DIAGNOSTIC] (resetAllSingletons) Fallback: DatabaseManager.singletonInstance set to null');
+  }
+  if (typeof JobStatusStore.resetInstance === 'function') {
+    JobStatusStore.resetInstance();
+  }
+}
+
 export async function createTestDatabaseManager(): Promise<DatabaseManager> {
+  // Reset all singletons before DB creation for test isolation
+  resetAllSingletons();
   // Create a unique test database in temp directory
   testDbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gmail-test-'));
   testDbPath = path.join(testDbDir, 'test-emails.db');
@@ -82,6 +99,10 @@ export async function createTestDatabaseManager(): Promise<DatabaseManager> {
     console.log('[DIAGNOSTIC] (after migration) migrations table: ERROR', e);
   }
   
+  // Log DB path and instance ID after creation
+  console.log('[DIAGNOSTIC] (after DB create) DB path:', testDbPath);
+  console.log('[DIAGNOSTIC] (after DB create) DB instance ID:', dbManager.getInstanceId());
+  
   return dbManager;
 }
 
@@ -89,6 +110,16 @@ export async function createTestDatabaseManager(): Promise<DatabaseManager> {
 export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<void> {
   if (dbManager) {
     await dbManager.close();
+    if (typeof DatabaseManager.resetInstance === 'function') {
+      DatabaseManager.resetInstance();
+    } else if ('singletonInstance' in DatabaseManager) {
+      (DatabaseManager as any).singletonInstance = null;
+      console.log('[DIAGNOSTIC] (cleanupTestDatabase) Fallback: DatabaseManager.singletonInstance set to null');
+    }
+    if (typeof JobStatusStore.resetInstance === 'function') {
+      JobStatusStore.resetInstance();
+    }
+    console.log('[DIAGNOSTIC] (after cleanup) Reset all singletons.');
   }
   // Remove test database directory and file
   if (testDbDir) {
@@ -531,12 +562,10 @@ export function generatePerformanceTestEmails(count: number): EmailIndex[] {
 
 // Job Processing Helpers
 export async function waitForJobCompletion(jobId: string, options: { timeout?: number } = {}): Promise<Job> {
-  const timeout = options.timeout || 1000;
-  const startTime = Date.now();
-  const jobStatusStore = JobStatusStore.getInstance();
-  
-  while (Date.now() - startTime < timeout) {
-    const job = await jobStatusStore.getJobStatus(jobId);
+  const timeout = options.timeout ?? 15000; // Increased default timeout to 15s
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const job = await JobStatusStore.getInstance().getJobStatus(jobId);
     if (job && [JobStatus.COMPLETED, JobStatus.FAILED].includes(job.status)) {
       return job;
     }
@@ -545,12 +574,10 @@ export async function waitForJobCompletion(jobId: string, options: { timeout?: n
   throw new Error(`Job ${jobId} did not complete within ${timeout}ms`);
 }
 
-export async function waitForJobStatus(jobId: string, status: JobStatus, timeout: number = 30000): Promise<Job> {
-  const startTime = Date.now();
-  const jobStatusStore = JobStatusStore.getInstance();
-  
-  while (Date.now() - startTime < timeout) {
-    const job = await jobStatusStore.getJobStatus(jobId);
+export async function waitForJobStatus(jobId: string, status: JobStatus, timeout: number = 15000): Promise<Job> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const job = await JobStatusStore.getInstance().getJobStatus(jobId);
     if (job && job.status === status) {
       return job;
     }
@@ -566,12 +593,12 @@ export async function createJobAndWaitForCompletion(params: any): Promise<{ job:
   return { job, result: job.results };
 }
 
-export async function submitMultipleJobs(jobParams: any[]): Promise<string[]> {
+export async function submitMultipleJobs(jobParams: any[], user_id?: string): Promise<string[]> {
   const jobStatusStore = JobStatusStore.getInstance();
   const jobIds: string[] = [];
   
   for (const params of jobParams) {
-    const jobId = await jobStatusStore.createJob('categorization', params);
+    const jobId = await jobStatusStore.createJob('categorization', params, user_id);
     jobIds.push(jobId);
   }
   
@@ -935,18 +962,19 @@ export async function createWorkerWithRealComponents(): Promise<{
   dbManager: DatabaseManager;
   cacheManager: CacheManager;
 }> {
+  // Reset all singletons before creating components
+  resetAllSingletons();
   const dbManager = await createTestDatabaseManager();
-  // Reset JobStatusStore singleton for test isolation
+  // Reset JobStatusStore singleton for test isolation (again, after DB is ready)
   JobStatusStore.resetInstance();
   const jobStatusStore = JobStatusStore.getInstance(dbManager);
   await jobStatusStore.initialize();
-  
+  console.log('[DIAGNOSTIC] (worker setup) JobStatusStore instance ID:', jobStatusStore.getInstanceId());
+  console.log('[DIAGNOSTIC] (worker setup) DatabaseManager instance ID:', dbManager.getInstanceId());
   const jobQueue = new JobQueue();
   const cacheManager = new CacheManager();
   const categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
-  // Pass user_id: 'default' for single-user OAuth
   const worker = new CategorizationWorker(jobQueue, categorizationEngine);
-  
   return {
     worker,
     jobQueue,

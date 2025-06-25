@@ -94,6 +94,14 @@ export class DatabaseManager {
   }
 
   /**
+   * Reset the singleton instance (for test isolation)
+   */
+  static resetInstance(): void {
+    logger.info('DatabaseManager: Resetting singleton instance for test isolation');
+    this.singletonInstance = null;
+  }
+
+  /**
    * Initialize the database
    * @param dbPath Optional path to use for the database file
    * @param useMigrations If true, skip manual schema creation (for test/migration-managed DBs)
@@ -849,22 +857,22 @@ export class DatabaseManager {
       email?.archiveDate?.getTime() || null,
       email?.archiveLocation || null,
       // Importance Analysis Results
-      email?.importanceScore || null,
-      email?.importanceLevel || null,
+      email?.importanceScore ?? null,
+      email?.importanceLevel ?? null,
       email?.importanceMatchedRules
         ? JSON.stringify(email.importanceMatchedRules)
         : null,
-      email?.importanceConfidence || null,
+      email?.importanceConfidence ?? null,
       // Date/Size Analysis Results
-      email?.ageCategory || null,
-      email?.sizeCategory || null,
-      email?.recencyScore || null,
-      email?.sizePenalty || null,
+      email?.ageCategory ?? null,
+      email?.sizeCategory ?? null,
+      email?.recencyScore ?? null,
+      email?.sizePenalty ?? null,
       // Label Classification Results
-      email?.gmailCategory || null,
-      email?.spam_score || null,
-      email?.promotional_score || null,
-      email?.socialScore || null,
+      email?.gmailCategory ?? null,
+      email?.spam_score ?? null,
+      email?.promotional_score ?? null,
+      email?.socialScore ?? null,
       email?.spamIndicators ? JSON.stringify(email.spamIndicators) : null,
       email?.promotionalIndicators
         ? JSON.stringify(email.promotionalIndicators)
@@ -912,22 +920,22 @@ export class DatabaseManager {
       email.archiveDate ? email.archiveDate.getTime() : null,
       email.archiveLocation || null,
       // Importance Analysis Results
-      email?.importanceScore || null,
-      email?.importanceLevel || null,
+      email?.importanceScore ?? null,
+      email?.importanceLevel ?? null,
       email?.importanceMatchedRules
         ? JSON.stringify(email.importanceMatchedRules)
         : null,
-      email?.importanceConfidence || null,
+      email?.importanceConfidence ?? null,
       // Date/Size Analysis Results
-      email?.ageCategory || null,
-      email?.sizeCategory || null,
-      email?.recencyScore || null,
-      email?.sizePenalty || null,
+      email?.ageCategory ?? null,
+      email?.sizeCategory ?? null,
+      email?.recencyScore ?? null,
+      email?.sizePenalty ?? null,
       // Label Classification Results
-      email?.gmailCategory || null,
-      email?.spam_score || null,
-      email?.promotional_score || null,
-      email?.socialScore || null,
+      email?.gmailCategory ?? null,
+      email?.spam_score ?? null,
+      email?.promotional_score ?? null,
+      email?.socialScore ?? null,
       email?.spamIndicators ? JSON.stringify(email.spamIndicators) : null,
       email?.promotionalIndicators
         ? JSON.stringify(email.promotionalIndicators)
@@ -1048,6 +1056,10 @@ export class DatabaseManager {
     }
 
     const rows = await this.all(sql, params);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[DEBUG] searchEmails SQL:', sql);
+      console.log('[DEBUG] searchEmails params:', params);
+    }
     return rows.map((row) => this.rowToEmailIndex(row));
   }
 
@@ -1071,24 +1083,24 @@ export class DatabaseManager {
       user_id: row.user_id || undefined,  // Added for multi-user support
 
       // Importance Analysis Results
-      importanceScore: row.importance_score || undefined,
-      importanceLevel: row.importance_level || undefined,
+      importanceScore: row.importance_score ?? undefined,
+      importanceLevel: row.importance_level ?? undefined,
       importanceMatchedRules: row.importance_matched_rules
         ? JSON.parse(row.importance_matched_rules)
         : undefined,
-      importanceConfidence: row.importance_confidence || undefined,
+      importanceConfidence: row.importance_confidence ?? undefined,
 
       // Date/Size Analysis Results
-      ageCategory: row.age_category || undefined,
-      sizeCategory: row.size_category || undefined,
-      recencyScore: row.recency_score || undefined,
-      sizePenalty: row.size_penalty || undefined,
+      ageCategory: row.age_category ?? undefined,
+      sizeCategory: row.size_category ?? undefined,
+      recencyScore: row.recency_score ?? undefined,
+      sizePenalty: row.size_penalty ?? undefined,
 
       // Label Classification Results
-      gmailCategory: row.gmail_category || undefined,
-      spam_score: row.spam_score || undefined,
-      promotional_score: row.promotional_score || undefined,
-      socialScore: row.social_score || undefined,
+      gmailCategory: row.gmail_category ?? undefined,
+      spam_score: row.spam_score ?? undefined,
+      promotional_score: row.promotional_score ?? undefined,
+      socialScore: row.social_score ?? undefined,
       spamIndicators: row.spam_indicators
         ? JSON.parse(row.spam_indicators)
         : undefined,

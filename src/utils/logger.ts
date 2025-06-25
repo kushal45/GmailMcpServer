@@ -51,8 +51,8 @@ const redactPII = winston.format((info) => {
   
   // Convert back to object, but only if valid JSON
   try {
-    const redactedInfo = JSON.parse(fullMessage);
-    return redactedInfo;
+  const redactedInfo = JSON.parse(fullMessage);
+  return redactedInfo;
   } catch (e) {
     // If parsing fails, just return the original info object
     return info;
@@ -90,7 +90,6 @@ if (process.env.NODE_ENV !== 'production') {
     })
   );
 }
-
 // Create the main logger
 export const logger = winston.createLogger({
   level: logLevel,

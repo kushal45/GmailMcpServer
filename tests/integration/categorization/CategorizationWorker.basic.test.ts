@@ -348,8 +348,8 @@ describe("CategorizationWorker Basic Integration Tests", () => {
     });
 
     // Start a worker for each user
-    const workerA = new CategorizationWorker(jobQueue, categorizationEngine, 'userA');
-    const workerB = new CategorizationWorker(jobQueue, categorizationEngine, 'userB');
+    const workerA = new CategorizationWorker(jobQueue, categorizationEngine);
+    const workerB = new CategorizationWorker(jobQueue, categorizationEngine);
     workerA.start();
     workerB.start();
 
@@ -462,8 +462,8 @@ describe("CategorizationWorker Basic Integration Tests", () => {
     });
 
     // Start a worker for each user
-    const workerA = new CategorizationWorker(jobQueue, categorizationEngine, 'userA');
-    const workerB = new CategorizationWorker(jobQueue, categorizationEngine, 'userB');
+    const workerA = new CategorizationWorker(jobQueue, categorizationEngine);
+    const workerB = new CategorizationWorker(jobQueue, categorizationEngine);
     workerA.start();
     workerB.start();
 

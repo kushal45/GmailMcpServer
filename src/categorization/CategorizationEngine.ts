@@ -187,6 +187,15 @@ export class CategorizationEngine {
         if (email.spam_score && email.spam_score > 0.5) {
           spamDetectedCount++;
         }
+        try {
+          if (this.importanceAnalyzer && typeof this.importanceAnalyzer.getApplicableRules === 'function') {
+            const applicableRules = this.importanceAnalyzer.getApplicableRules(this.createAnalysisContext(email, userContext?.user_id || 'default'));
+            this.metrics.rulesEvaluated += applicableRules.length;
+            logger.debug('[METRICS] Evaluated rules for email', { emailId: email.id, rulesEvaluated: applicableRules.length });
+          }
+        } catch (err) {
+          logger.error('[METRICS] Error incrementing rulesEvaluated', { emailId: email.id, error: err instanceof Error ? err.message : err });
+        }
         
         // Log progress every 100 emails
         if (processed % 100 === 0) {
@@ -497,51 +506,87 @@ export class CategorizationEngine {
 
   /**
    * Collects detailed analyzer results and stores them in the email object for persistence
+   * Ensures all expected fields are always set, with safe defaults if missing.
+   *
+   * Expected fields and defaults:
+   * - importanceScore: number (default 0)
+   * - importanceLevel: 'high' | 'medium' | 'low' (default 'medium')
+   * - importanceMatchedRules: string[] (default [])
+   * - importanceConfidence: number (default 0)
+   * - ageCategory: 'recent' | 'moderate' | 'old' (default 'moderate')
+   * - sizeCategory: 'small' | 'medium' | 'large' (default 'medium')
+   * - recencyScore: number (default 0)
+   * - sizePenalty: number (default 0)
+   * - gmailCategory: string (default 'primary')
+   * - spam_score: number (default 0)
+   * - promotional_score: number (default 0)
+   * - socialScore: number (default 0)
+   * - spamIndicators: string[] (default [])
+   * - promotionalIndicators: string[] (default [])
+   * - socialIndicators: string[] (default [])
+   * - analysisTimestamp: Date (always set)
+   * - analysisVersion: string (always set)
    */
   private collectAnalyzerResults(email: EmailIndex, combinedResult: CombinedAnalysisResult): void {
     try {
       // Extract importance analysis results
-      const importanceResult = combinedResult.importance;
-      email.importanceScore = importanceResult.score;
-      email.importanceLevel = importanceResult.level;
-      email.importanceMatchedRules = importanceResult.matchedRules || [];
-      email.importanceConfidence = importanceResult.confidence;
+      const importanceResult = combinedResult.importance || {};
+      email.importanceScore = (importanceResult.score !== undefined && importanceResult.score !== null) ? importanceResult.score : 0;
+      email.importanceLevel = (importanceResult.level !== undefined && importanceResult.level !== null) ? importanceResult.level : 'medium';
+      email.importanceMatchedRules = (importanceResult.matchedRules !== undefined && importanceResult.matchedRules !== null) ? importanceResult.matchedRules : [];
+      email.importanceConfidence = (importanceResult.confidence !== undefined && importanceResult.confidence !== null) ? importanceResult.confidence : 0;
 
       // Extract date/size analysis results
-      const dateSizeResult = combinedResult.dateSize;
-      email.ageCategory = dateSizeResult.ageCategory;
-      email.sizeCategory = dateSizeResult.sizeCategory;
-      email.recencyScore = dateSizeResult.recencyScore;
-      email.sizePenalty = dateSizeResult.sizePenalty;
+      const dateSizeResult = combinedResult.dateSize || {};
+      email.ageCategory = (dateSizeResult.ageCategory !== undefined && dateSizeResult.ageCategory !== null) ? dateSizeResult.ageCategory : 'moderate';
+      email.sizeCategory = (dateSizeResult.sizeCategory !== undefined && dateSizeResult.sizeCategory !== null) ? dateSizeResult.sizeCategory : 'medium';
+      // Robust: always set recencyScore and sizePenalty to 0 if missing
+      email.recencyScore = (typeof dateSizeResult.recencyScore === 'number' && !isNaN(dateSizeResult.recencyScore)) ? dateSizeResult.recencyScore : 0;
+      email.sizePenalty = (typeof dateSizeResult.sizePenalty === 'number' && !isNaN(dateSizeResult.sizePenalty)) ? dateSizeResult.sizePenalty : 0;
 
       // Extract label classification results
-      const labelClassification = combinedResult.labelClassification;
-      // Map 'other' category to 'primary' as fallback since EmailIndex doesn't support 'other'
-      email.gmailCategory = labelClassification.category === 'other' ? 'primary' : labelClassification.category;
-      email.spam_score = labelClassification.spam_score;
-      email.promotional_score = labelClassification.promotional_score;
-      email.socialScore = labelClassification.socialScore;
-      
+      const labelClassification = combinedResult.labelClassification || {};
+      email.gmailCategory = (labelClassification.category === 'other' || !labelClassification.category) ? 'primary' : labelClassification.category;
+      email.spam_score = (labelClassification.spamScore !== undefined && labelClassification.spamScore !== null) ? labelClassification.spamScore :
+                         (labelClassification.spam_score !== undefined && labelClassification.spam_score !== null) ? labelClassification.spam_score : 0;
+      email.promotional_score = (labelClassification.promotionalScore !== undefined && labelClassification.promotionalScore !== null) ? labelClassification.promotionalScore :
+                               (labelClassification.promotional_score !== undefined && labelClassification.promotional_score !== null) ? labelClassification.promotional_score : 0;
+      email.socialScore = (labelClassification.socialScore !== undefined && labelClassification.socialScore !== null) ? labelClassification.socialScore : 0;
+
       // Handle indicators arrays - store as arrays directly
       if (labelClassification.indicators) {
-        email.spamIndicators = labelClassification.indicators.spam || [];
-        email.promotionalIndicators = labelClassification.indicators.promotional || [];
-        email.socialIndicators = labelClassification.indicators.social || [];
+        email.spamIndicators = (labelClassification.indicators.spam !== undefined && labelClassification.indicators.spam !== null) ? labelClassification.indicators.spam : [];
+        email.promotionalIndicators = (labelClassification.indicators.promotional !== undefined && labelClassification.indicators.promotional !== null) ? labelClassification.indicators.promotional : [];
+        email.socialIndicators = (labelClassification.indicators.social !== undefined && labelClassification.indicators.social !== null) ? labelClassification.indicators.social : [];
+      } else {
+        email.spamIndicators = [];
+        email.promotionalIndicators = [];
+        email.socialIndicators = [];
       }
-
 
       // Add analysis metadata
       email.analysisTimestamp = new Date();
       email.analysisVersion = ANALYSIS_VERSION;
 
-      logger.debug('CategorizationEngine: Analyzer results collected', {
-        emailId: email.id,
-        importanceLevel: email.importanceLevel,
+      // Debug: print all analyzer fields after assignment
+      logger.debug('[DEBUG] Analyzer fields after assignment', {
+        id: email.id,
         importanceScore: email.importanceScore,
+        importanceLevel: email.importanceLevel,
+        importanceMatchedRules: email.importanceMatchedRules,
+        importanceConfidence: email.importanceConfidence,
         ageCategory: email.ageCategory,
         sizeCategory: email.sizeCategory,
+        recencyScore: email.recencyScore,
+        sizePenalty: email.sizePenalty,
         gmailCategory: email.gmailCategory,
         spam_score: email.spam_score,
+        promotional_score: email.promotional_score,
+        socialScore: email.socialScore,
+        spamIndicators: email.spamIndicators,
+        promotionalIndicators: email.promotionalIndicators,
+        socialIndicators: email.socialIndicators,
+        analysisTimestamp: email.analysisTimestamp,
         analysisVersion: email.analysisVersion
       });
     } catch (error) {
@@ -549,7 +594,6 @@ export class CategorizationEngine {
         emailId: email.id,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
-      
       // Set minimal analysis metadata even on error
       email.analysisTimestamp = new Date();
       email.analysisVersion = ANALYSIS_VERSION;
