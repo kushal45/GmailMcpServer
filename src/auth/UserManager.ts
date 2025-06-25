@@ -15,7 +15,7 @@ export class UserManager {
   private userProfilesPath: string;
   private tokenStoragePath: string;
   private readonly encryptionKey: string;
-
+  private static instance: UserManager;
   /**
    * Create a new UserManager instance
    * @param storagePath Base path for user data storage
@@ -30,6 +30,13 @@ export class UserManager {
     this.encryptionKey = encryptionKey || 
       process.env.TOKEN_ENCRYPTION_KEY || 
       crypto.randomBytes(32).toString('hex');
+  }
+
+  static getInstance(): UserManager {
+    if (!UserManager.instance) {
+      UserManager.instance = new UserManager();
+    }
+    return UserManager.instance;
   }
 
   /**
@@ -131,6 +138,7 @@ export class UserManager {
       created: now,
       lastLogin: now,
       preferences: {},
+      role: 'user',
       isActive: true
     };
     

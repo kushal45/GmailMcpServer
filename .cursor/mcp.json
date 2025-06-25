@@ -17,6 +17,13 @@
     "duckduckgo": {
       "command": "npx",
       "args": ["-y", "duckduckgo-mcp-server"]
+    },
+    "brave-search": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "BRAVE_API_KEY", "mcp/brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "BSAo-B0D0-_lQrO4-ZG8_EerHYuKLdW"
+      }
     }
   }
 }

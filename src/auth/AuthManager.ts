@@ -15,6 +15,9 @@ const __dirname = path.dirname(__filename);
 
 // Default scopes required for Gmail operations
 const SCOPES = [
+  'openid',
+  'email',
+  'profile',
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/gmail.labels'
@@ -80,7 +83,7 @@ export class AuthManager {
     const storagePath = this.options.storagePath || process.env.STORAGE_PATH || DEFAULT_STORAGE_PATH;
     
     // Initialize UserManager
-    this.userManager = new UserManager(storagePath, this.options.encryptionKey);
+    this.userManager = UserManager.getInstance();
     await this.userManager.initialize();
     
     logger.info('Multi-user auth manager initialized');
@@ -401,6 +404,9 @@ export class AuthManager {
     const authPromise = new Promise<string>((resolve, reject) => {
       this.pendingAuthRequests.set(stateParam, { resolve, reject });
     });
+    authPromise.then((sessionId) => {
+      logger.info(`Authentication successful for user ${options.email} with sessionId ${sessionId}`);
+    });
     
     // Generate auth URL with state parameter
     const authUrl = tempOAuth2Client.generateAuthUrl({
@@ -461,8 +467,8 @@ export class AuthManager {
         if (url.pathname === '/oauth2callback') {
           const code = url.searchParams.get('code');
           const state = url.searchParams.get('state');
-          
-          if (code) {
+          // Only process if code and state are present and state is pending
+          if (code && state && this.pendingAuthRequests.has(state)) {
             try {
               if (this.multiUserMode && state) {
                 // Multi-user mode
@@ -511,8 +517,9 @@ export class AuthManager {
             }
           }
         } else {
-          res.writeHead(404);
-          res.end();
+          //res.writeHead(404);
+          //res.end();
+          return;
         }
       });
 
@@ -549,7 +556,7 @@ export class AuthManager {
     );
 
     // Exchange code for token
-    const { tokens } = await oAuth2Client.getToken(code);
+    const { tokens,res:gaxiosResponse } = await oAuth2Client.getToken(code);
     
     // Get the user's email from the ID token
     let email = '';
@@ -577,11 +584,7 @@ export class AuthManager {
       throw new Error('Unable to determine user email from authentication response');
     }
     
-    // Create or get user
-    const user = await this.userManager.createUser(email, displayName);
-    
-    // Create a session for the user
-    const session = this.userManager.createSession(user.userId);
+    const session = await this.createUserSession(email, displayName);
     
     // Store the token
     await session.storeToken(tokens);
@@ -593,6 +596,8 @@ export class AuthManager {
         <body>
           <h1>Authentication Successful!</h1>
           <p>Hello, ${displayName || email}! You can now close this window and return to the application.</p>
+          <p>Your session ID is ${session.getSessionData().sessionId}</p>
+          <p>Your user ID is ${session.getSessionData().userId}</p>
           <script>window.close();</script>
         </body>
       </html>
@@ -712,7 +717,7 @@ export class AuthManager {
    * @param email User email
    * @param displayName Optional display name
    */
-  async createUserSession(email: string, displayName?: string): Promise<string> {
+  async createUserSession(email: string, displayName?: string): Promise<UserSession> {
     if (!this.multiUserMode) {
       throw new Error('Not in multi-user mode');
     }
@@ -727,7 +732,7 @@ export class AuthManager {
     // Create session
     const session = this.userManager.createSession(user.userId);
     
-    return session.getSessionData().sessionId;
+    return session;
   }
 
   /**

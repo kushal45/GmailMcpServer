@@ -321,7 +321,7 @@ export class CategorizationEngine {
             'DateSizeAnalyzer'
           ),
           this.runWithTimeout(
-            () => this.labelClassifier.classifyLabels(context.labels),
+            () => this.labelClassifier.classifyLabels(context.labels,context.user_id),
             config.orchestration.timeoutMs,
             'LabelClassifier'
           )
@@ -341,7 +341,7 @@ export class CategorizationEngine {
         this.metrics.dateSizeAnalysisTime += Date.now() - dateSizeStart;
         
         const labelStart = Date.now();
-        labelClassification = await this.labelClassifier.classifyLabels(context.labels);
+        labelClassification = await this.labelClassifier.classifyLabels(context.labels,context.user_id);
         this.metrics.labelClassificationTime += Date.now() - labelStart;
       }
 

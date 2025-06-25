@@ -139,10 +139,10 @@ export class DatabaseManager {
       await this.run("PRAGMA foreign_keys = ON");
 
       if (!useMigrations) {
-        // Create tables
-        await this.createTables();
-        // Run migration for existing databases
-        await this.migrateToAnalyzerSchema();
+      // Create tables
+      await this.createTables();
+      // Run migration for existing databases
+      await this.migrateToAnalyzerSchema();
       }
 
       this.initialized = true;

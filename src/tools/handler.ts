@@ -34,6 +34,8 @@ interface ToolContext {
   cleanupAutomationEngine: CleanupAutomationEngine;
 }
 
+const toolNamesNotRequiringAuth = ['authenticate', 'register_user','get_system_health','list_users'];
+
 export async function handleToolCall(
   toolName: string,
   args: any,
@@ -44,7 +46,7 @@ export async function handleToolCall(
   try {
     // Validate user context for all tools except authenticate
     // This allows new users to authenticate first
-    if (toolName !== 'authenticate' && toolName !== 'register_user') {
+    if (!toolNamesNotRequiringAuth.includes(toolName)) {
       await validateUserContext(args, context);
     }
     
@@ -803,6 +805,7 @@ async function validateUserContext(args: any, context: ToolContext): Promise<voi
  */
 async function handleRegisterUser(args: any, context: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
+    let newUserRole = 'user';
     // Check if caller is admin when not registering first user
     const allUsers = context.userManager.getAllUsers();
     if (allUsers.length > 0) {
@@ -832,7 +835,8 @@ async function handleRegisterUser(args: any, context: ToolContext): Promise<{ co
     
     // If this is the first user, automatically make them an admin
     if (allUsers.length === 0) {
-      await context.userManager.updateUser(newUser.userId, { role: 'admin' });
+      newUserRole = 'admin';
+      await context.userManager.updateUser(newUser.userId, { role: newUserRole as 'user' | 'admin' });
     }
     
     return {
@@ -841,7 +845,10 @@ async function handleRegisterUser(args: any, context: ToolContext): Promise<{ co
         text: JSON.stringify({
           success: true,
           message: 'User registered successfully',
-          userId: newUser.userId
+          userId: newUser.userId,
+          displayName: newUser.displayName,
+          email: newUser.email,
+          role: newUserRole
         }, null, 2)
       }]
     };

@@ -40,6 +40,19 @@
             "skipFiles": [
                 "<node_internals>/**"
             ]
-   }
+   },
+   {
+    "type": "node",
+    "request": "attach",
+    "name": "Attach to MCP Server (build/index.js)",
+    "port": 9229,
+    "restart": true,
+  },
+  ],
+  "compounds": [
+    {
+      "name": "Run MCP Client Jest Test and attach to MCP Server",
+      "configurations": ["run Jest Test file", "Attach to MCP Server"]
+    }
   ]
 }

@@ -62,8 +62,9 @@ export class GmailMcpServer {
     this.databaseManager = DatabaseManager.getInstance();
     this.jobStatusStore = JobStatusStore.getInstance();
     this.cacheManager = new CacheManager();
-    this.authManager = new AuthManager();
-    this.userManager = new UserManager();
+    this.userManager = UserManager.getInstance();
+    const enableMultiUser = process.env.MULTI_USER_MODE === 'true';
+    this.authManager = new AuthManager({enableMultiUser});
     this.fileAccessControlManager = new FileAccessControlManager(this.databaseManager);
     this.emailFetcher = new EmailFetcher(
       this.databaseManager,
