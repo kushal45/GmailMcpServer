@@ -138,7 +138,6 @@ export class UserManager {
       created: now,
       lastLogin: now,
       preferences: {},
-      role: 'user',
       isActive: true
     };
     

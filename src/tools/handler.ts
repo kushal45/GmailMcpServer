@@ -805,7 +805,7 @@ async function validateUserContext(args: any, context: ToolContext): Promise<voi
  */
 async function handleRegisterUser(args: any, context: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
-    let newUserRole = 'user';
+    let newUserRole = args?.role || 'user';
     // Check if caller is admin when not registering first user
     const allUsers = context.userManager.getAllUsers();
     if (allUsers.length > 0) {
@@ -829,8 +829,8 @@ async function handleRegisterUser(args: any, context: ToolContext): Promise<{ co
     );
     
     // Set role if provided and valid
-    if (args.role && ['user', 'admin'].includes(args.role)) {
-      await context.userManager.updateUser(newUser.userId, { role: args.role });
+    if (args.role) {
+      await context.userManager.updateUser(newUser.userId, { role: newUserRole });
     }
     
     // If this is the first user, automatically make them an admin

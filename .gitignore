@@ -10,6 +10,10 @@ dist/
 .env.local
 .env.*.local
 
+# Test environment files
+tests/**/.env.test
+tests/**/.env.test.local
+
 # Credentials
 credentials.json
 token.json

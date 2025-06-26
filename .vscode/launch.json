@@ -48,6 +48,23 @@
     "port": 9229,
     "restart": true,
   },
+  {
+    "name": "Debug OAuth Validation Script",
+    "type": "node",
+    "request": "launch",
+    "skipFiles": ["<node_internals>/**"],
+    "program": "${workspaceFolder}/tests/integration/mcp/oauth-validation.cjs",
+    "console": "integratedTerminal",
+    "internalConsoleOptions": "neverOpen",
+    "cwd": "${workspaceFolder}",
+    "env": {
+      "NODE_ENV": "test",
+      "HEADLESS_BROWSER": "false",
+      "BROWSER_TIMEOUT": "300000",
+      "USE_MOCK_OAUTH": "false"
+    },
+    "outputCapture": "console"
+  },
   ],
   "compounds": [
     {
