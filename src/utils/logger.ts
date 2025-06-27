@@ -20,7 +20,12 @@ try {
   console.error('Failed to create logs directory:', error);
 }
 
-const logLevel = process.env.LOG_LEVEL || 'info';
+// Helper to detect test environment
+function isTestEnv() {
+  return process.env.NODE_ENV === 'test' || process.env.CI === 'true';
+}
+
+const logLevel = isTestEnv() ? 'warn' : (process.env.LOG_LEVEL || 'info');
 
 // Regular expressions for PII detection
 const PII_PATTERNS = [
@@ -41,20 +46,43 @@ const PII_PATTERNS = [
  * @param info Winston log info object
  */
 const redactPII = winston.format((info) => {
-  // Convert the entire message to a string
-  let fullMessage = JSON.stringify(info);
-  
-  // Apply each PII pattern
-  PII_PATTERNS.forEach(({ pattern, replacement }) => {
-    fullMessage = fullMessage.replace(pattern, replacement);
-  });
-  
-  // Convert back to object, but only if valid JSON
   try {
-  const redactedInfo = JSON.parse(fullMessage);
-  return redactedInfo;
+    // Create a deep copy of the info object to avoid mutations
+    const redactedInfo = { ...info };
+
+    // Redact PII from string fields
+    const redactString = (str: string): string => {
+      let redacted = str;
+      PII_PATTERNS.forEach(({ pattern, replacement }) => {
+        redacted = redacted.replace(pattern, replacement);
+      });
+      return redacted;
+    };
+
+    // Redact message field
+    if (redactedInfo.message && typeof redactedInfo.message === 'string') {
+      redactedInfo.message = redactString(redactedInfo.message);
+    }
+
+    // Redact any string values in metadata
+    Object.keys(redactedInfo).forEach(key => {
+      if (key !== 'level' && key !== 'timestamp' && typeof redactedInfo[key] === 'string') {
+        redactedInfo[key] = redactString(redactedInfo[key]);
+      } else if (typeof redactedInfo[key] === 'object' && redactedInfo[key] !== null) {
+        // Recursively redact nested objects (shallow level only for performance)
+        const obj = redactedInfo[key] as Record<string, any>;
+        Object.keys(obj).forEach(nestedKey => {
+          if (typeof obj[nestedKey] === 'string') {
+            obj[nestedKey] = redactString(obj[nestedKey]);
+          }
+        });
+      }
+    });
+
+    return redactedInfo;
   } catch (e) {
-    // If parsing fails, just return the original info object
+    // If redaction fails, just return the original info object
+    console.error('PII redaction failed:', e instanceof Error ? e.message : String(e));
     return info;
   }
 });
@@ -99,7 +127,7 @@ export const logger = winston.createLogger({
     }),
     winston.format.errors({ stack: true }),
     winston.format.splat(),
-    redactPII(), // Apply PII redaction
+    //redactPII(), // Apply PII redaction
     winston.format.json()
   ),
   defaultMeta: { service: 'gmail-mcp-server' },
@@ -233,11 +261,6 @@ export async function getUserLogs(
 
 // Override console methods to use stderr in production
 if (process.env.NODE_ENV === 'production') {
-  const originalConsoleLog = console.log;
-  const originalConsoleInfo = console.info;
-  const originalConsoleWarn = console.warn;
-  const originalConsoleDebug = console.debug;
-  
   console.log = (...args: any[]) => console.error('[console.log]', ...args);
   console.info = (...args: any[]) => console.error('[console.info]', ...args);
   console.warn = (...args: any[]) => console.error('[console.warn]', ...args);

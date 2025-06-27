@@ -3,12 +3,13 @@ import { describe, expect, beforeEach, jest, test } from '@jest/globals';
 import { ArchiveManager } from '../../../src/archive/ArchiveManager';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { DatabaseManager } from '../../../src/database/DatabaseManager';
+import { UserDatabaseManagerFactory } from '../../../src/database/UserDatabaseManagerFactory';
 import { FileFormatterRegistry } from '../../../src/archive/formatters/FormatterRegistry';
 import { IFileFormatter } from '../../../src/archive/formatters/IFileFormatter';
 import { ValidationResultFactory } from '../../../src/archive/formatters/ValidationResult';
 import { UnsupportedFormatError, FormatterError } from '../../../src/archive/formatters/FormatterError';
 import { FileAccessControlManager } from '../../../src/services/FileAccessControlManager';
-import { UserManager } from '../../../src/auth/UserManager';
+
 import { EmailIndex } from '../../../src/types';
 import { UserContext } from '../../../src/types/file-access-control';
 import fs from 'fs/promises';
@@ -17,9 +18,9 @@ import path from 'path';
 // Mock the module imports to prevent issues with ES modules
 jest.mock('../../../src/auth/AuthManager');
 jest.mock('../../../src/database/DatabaseManager');
+jest.mock('../../../src/database/UserDatabaseManagerFactory');
 jest.mock('../../../src/archive/formatters/FormatterRegistry');
 jest.mock('../../../src/services/FileAccessControlManager');
-jest.mock('../../../src/auth/UserManager');
 jest.mock('fs/promises');
 jest.mock('path');
 
@@ -34,9 +35,10 @@ describe('ArchiveManager', () => {
   // Mock instances with 'any' type to avoid TypeScript errors
   let authManager: any;
   let databaseManager: any;
+  let userDbManagerFactory: any;
   let formatterRegistry: any;
   let fileAccessControl: any;
-  let userManager: any;
+
   let archiveManager: ArchiveManager;
 
   // Mock UserContext for tests
@@ -49,14 +51,7 @@ describe('ArchiveManager', () => {
     user_agent: 'test-agent'
   };
 
-  const mockUserContext2: UserContext = {
-    user_id: 'test-user-456',
-    session_id: 'test-session-789',
-    roles: ['user'],
-    permissions: ['archive:read', 'archive:write'],
-    ip_address: '192.168.1.1',
-    user_agent: 'test-agent-2'
-  };
+
 
   // Mock Gmail client
   const mockGmailClient: any = {
@@ -128,9 +123,10 @@ describe('ArchiveManager', () => {
     // Setup mock instances
     authManager = new AuthManager();
     databaseManager = DatabaseManager.getInstance();
+    userDbManagerFactory = UserDatabaseManagerFactory.getInstance();
     formatterRegistry = new FileFormatterRegistry();
     fileAccessControl = new FileAccessControlManager(databaseManager);
-    userManager = new UserManager();
+
 
     // Setup auth manager mock
     // @ts-ignore - TypeScript error with mock return value
@@ -174,6 +170,12 @@ describe('ArchiveManager', () => {
       }
     ]);
 
+    // Setup user database manager factory mock
+    // @ts-ignore - TypeScript error with mock return value
+    userDbManagerFactory.getUserDatabaseManager = jest.fn().mockResolvedValue(databaseManager);
+    // @ts-ignore - TypeScript error with mock return value
+    userDbManagerFactory.initialize = jest.fn().mockResolvedValue(undefined);
+
     // Setup file access control mock
     // @ts-ignore - TypeScript error with mock return value
     fileAccessControl.createFileMetadata = jest.fn().mockResolvedValue({
@@ -214,7 +216,7 @@ describe('ArchiveManager', () => {
     process.env.ARCHIVE_PATH = 'test-archives';
 
     // Create archive manager instance
-    archiveManager = new ArchiveManager(authManager, databaseManager, formatterRegistry, fileAccessControl);
+    archiveManager = new ArchiveManager(authManager, userDbManagerFactory, formatterRegistry, fileAccessControl);
   });
 
   afterEach(() => {
@@ -415,25 +417,21 @@ describe('ArchiveManager', () => {
   });
 
   describe('restoreEmails', () => {
-    beforeEach(() => {
-      // Setup mock archived emails
+    test('should restore Gmail-archived emails successfully', async () => {
+      // Setup mock archived emails for this specific test
       const archivedEmails = sampleEmails.map(email => ({
         ...email,
         archived: true,
         archiveDate: new Date(),
+        user_id: 'test-user-123'
       }));
-      
-      // Email 1 archived via Gmail
-      archivedEmails[0].archiveLocation = 'ARCHIVED';
-      
-      // Email 2 archived via export
-      archivedEmails[1].archiveLocation = '/path/to/archive.json';
-      
-      // @ts-ignore - TypeScript error with mock return value
-      databaseManager.getEmailsByIds = jest.fn().mockResolvedValue(archivedEmails);
-    });
 
-    test('should restore Gmail-archived emails successfully', async () => {
+      // Email 1 archived via Gmail
+      archivedEmails[0].archiveLocation = 'GMAIL_ARCHIVED';
+
+      // @ts-ignore - TypeScript error with mock return value
+      databaseManager.getEmailsByIds = jest.fn().mockResolvedValue(archivedEmails.filter(e => e.id === 'email1'));
+
       // Setup
       const options = {
         emailIds: ['email1'],
@@ -443,16 +441,6 @@ describe('ArchiveManager', () => {
       // Mock Gmail API response
       // @ts-ignore - TypeScript error with mock return value
       mockGmailClient.users.messages.batchModify.mockResolvedValueOnce({ data: {} });
-
-      databaseManager.getEmailsByIds.mockResolvedValueOnce([
-        {
-          id: 'email1',
-          archived: true,
-          archiveDate: new Date(),
-          archiveLocation: 'ARCHIVED',
-          user_id: 'test-user-123'
-        }
-      ]);
       // Execute
       const result = await archiveManager.restoreEmails(options, mockUserContext);
 
@@ -521,7 +509,7 @@ describe('ArchiveManager', () => {
           id: 'email2',
           archived: true,
           archiveDate: new Date(),
-          archiveLocation: 'ARCHIVED',
+          archiveLocation: 'GMAIL_ARCHIVED',
           user_id: 'test-user-123'
         }
       ]);
@@ -588,7 +576,7 @@ describe('ArchiveManager', () => {
           id: 'email1',
           archived: true,
           archiveDate: new Date(),
-          archiveLocation: 'ARCHIVED',
+          archiveLocation: 'GMAIL_ARCHIVED',
           user_id: 'test-user-123'
         }
       ]);
@@ -764,16 +752,16 @@ describe('ArchiveManager', () => {
       // Verify
       expect(result.rules).toHaveLength(1);
       expect(result.rules[0].id).toBe('rule1');
-      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true);
+      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true, 'test-user-123');
     });
 
     test('should run scheduled rules', async () => {
-      // We don't need to mock private methods; instead we'll just verify the public interface
-      // Execute the method and check that the expected database methods were called
-      await archiveManager.runScheduledRules();
-      
-      // Verify that rules were fetched
-      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true);
+      // System-wide scheduled rules are now disabled in multi-user mode
+      // Test with user context instead
+      await archiveManager.runScheduledRules(mockUserContext);
+
+      // Verify that rules were fetched for the specific user
+      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true, 'test-user-123');
     });
   });
 });

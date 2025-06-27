@@ -4,6 +4,7 @@ import { DatabaseManager } from "./DatabaseManager.js";
 import { DatabaseRegistry } from "./DatabaseRegistry.js";
 import { DatabaseMigrationManager } from "./DatabaseMigrationManager.js";
 import { UserDatabaseInitializer, userDatabaseInitializer } from "./UserDatabaseInitializer.js";
+import { UserDatabaseManagerFactory, userDatabaseManagerFactory } from "./UserDatabaseManagerFactory.js";
 
 // Export all database components
 export {
@@ -11,10 +12,12 @@ export {
     JobQueue,
     JobStatusStore,
     DatabaseManager,
-    
+
     // Multi-user database components
     DatabaseRegistry,
     DatabaseMigrationManager,
     UserDatabaseInitializer,
-    userDatabaseInitializer
+    userDatabaseInitializer,
+    UserDatabaseManagerFactory,
+    userDatabaseManagerFactory
 }

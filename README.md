@@ -1650,3 +1650,24 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 [![Follow on LinkedIn](https://img.shields.io/badge/LinkedIn-Follow-blue?style=social&logo=linkedin)](https://www.linkedin.com/in/kushal-bhattacharya1993/)
 
 </div>
+
+To run the test suite efficiently, always set the environment variable `NODE_ENV=test` before running tests. This enables fast mode, which:
+- Skips artificial delays (e.g., between batches)
+- Reduces logging output for cleaner and faster test runs
+- Uses smaller data sets in most tests for speed (except explicit performance tests)
+
+**Example:**
+
+```sh
+NODE_ENV=test npm test
+```
+
+Or with `jest` directly:
+
+```sh
+NODE_ENV=test npx jest
+```
+
+**CI/CD:**
+
+Your CI pipeline should always set `NODE_ENV=test` to ensure the fastest possible test execution.

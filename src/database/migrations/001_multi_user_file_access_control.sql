@@ -1,5 +1,6 @@
 -- Multi-User OAuth Architecture - Phase 1 Database Migration
 -- Adds file access control tables and missing user_id foreign keys
+-- NOTE: All user isolation is enforced via user_id columns. There is NO users table or user_id foreign key in the real application schema.
 
 -- Add user_id to archive_rules table
 ALTER TABLE archive_rules ADD COLUMN user_id TEXT;
@@ -24,10 +25,8 @@ CREATE TABLE IF NOT EXISTS file_metadata (
   created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
   updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
   accessed_at INTEGER,
-  expires_at INTEGER,
-  
-  -- Foreign key constraints
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  expires_at INTEGER
+  -- No foreign key to users table
 );
 
 -- File access permissions table
@@ -40,12 +39,10 @@ CREATE TABLE IF NOT EXISTS file_access_permissions (
   granted_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
   expires_at INTEGER,
   is_active INTEGER NOT NULL DEFAULT 1,
-  
-  -- Foreign key constraints
+  -- Foreign key to file_metadata only
   FOREIGN KEY (file_id) REFERENCES file_metadata(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL,
-  
+  -- No foreign key to users table
+  -- No foreign key to granted_by
   -- Unique constraint to prevent duplicate permissions
   UNIQUE(file_id, user_id, permission_type)
 );
@@ -63,10 +60,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip_address TEXT,
   user_agent TEXT,
   success INTEGER NOT NULL DEFAULT 1,
-  error_message TEXT,
-  
-  -- Foreign key constraints
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  error_message TEXT
+  -- No foreign key to users table
 );
 
 -- Create indexes for performance

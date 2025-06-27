@@ -25,6 +25,7 @@ import { setupFormatterRegistry } from "./archive/setupFormatters.js";
 import { FileAccessControlManager } from "./services/FileAccessControlManager.js";
 import { UserManager } from "./auth/UserManager.js";
 import { userDatabaseInitializer } from "./database/UserDatabaseInitializer.js";
+import { userDatabaseManagerFactory } from "./database/UserDatabaseManagerFactory.js";
 
 export class GmailMcpServer {
   private server: Server;
@@ -67,7 +68,7 @@ export class GmailMcpServer {
     this.authManager = new AuthManager({enableMultiUser});
     this.fileAccessControlManager = new FileAccessControlManager(this.databaseManager);
     this.emailFetcher = new EmailFetcher(
-      this.databaseManager,
+      userDatabaseManagerFactory,
       this.authManager,
       this.cacheManager
     );
@@ -78,13 +79,13 @@ export class GmailMcpServer {
     const formatRegistry = setupFormatterRegistry()
     this.archiveManager = new ArchiveManager(
       this.authManager,
-      this.databaseManager,
+      userDatabaseManagerFactory,
       formatRegistry,
       this.fileAccessControlManager
     );
     this.deleteManager = new DeleteManager(
       this.authManager,
-      this.databaseManager
+      userDatabaseManagerFactory
     );
     this.jobQueue = new JobQueue();
     this.categorizationEngine = new CategorizationEngine(
@@ -158,7 +159,7 @@ export class GmailMcpServer {
       logger.error("MCP Server error:", error);
     };
 
-    process.on("unhandledRejection", (reason, promise) => {
+    process.on("unhandledRejection", (reason) => {
       logger.error(`Unhandled Rejection with reason : ${JSON.stringify(reason)}`);
     });
 

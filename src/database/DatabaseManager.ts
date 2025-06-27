@@ -39,10 +39,9 @@ export class DatabaseManager {
     const projectRoot = process.cwd();
 
     // Always resolve storage path relative to project root, not cwd or absolute
-    const storagePath = path.join(
-      projectRoot,
-      process.env.STORAGE_PATH || "data"
-    );
+    const storagePath = path.isAbsolute(process.env.STORAGE_PATH ?? "")
+      ? process.env.STORAGE_PATH ?? ""
+      : path.join(projectRoot, process.env.STORAGE_PATH ?? "data");
     
     // In multi-user mode, the dbPath will be set during initialization
     // For backward compatibility with single-user mode, set a default path
@@ -51,7 +50,13 @@ export class DatabaseManager {
     } else {
       this.dbPath = path.join(storagePath, "gmail-mcp.db");
     }
-
+    // Diagnostic log for test isolation
+    console.log('[DIAGNOSTIC] DatabaseManager constructor:', {
+      userId,
+      storagePath,
+      envStoragePath: process.env.STORAGE_PATH,
+      dbPath: this.dbPath
+    });
     logger.debug(`DatabaseManager created for ${userId ? 'user ' + userId : 'single-user mode'} with ID: ${this.instanceId}`);
   }
 
@@ -212,7 +217,8 @@ export class DatabaseManager {
         created INTEGER DEFAULT (strftime('%s', 'now')),
         last_run INTEGER,
         total_archived INTEGER DEFAULT 0,
-        last_archived INTEGER DEFAULT 0
+        last_archived INTEGER DEFAULT 0,
+        user_id TEXT
       )`,
 
         // Archive records table
@@ -225,7 +231,8 @@ export class DatabaseManager {
         format TEXT,
         size INTEGER,
         restorable INTEGER DEFAULT 1,
-        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+        user_id TEXT
       )`,
 
         // Saved searches table (with user_id for multi-user support)
@@ -516,7 +523,6 @@ export class DatabaseManager {
   // Now returns RunResult for INSERT/UPDATE/DELETE, or void for others.
   private run(sql: string, params: any[] = []): Promise<RunResult | void> {
     return new Promise(async (resolve, reject) => {
-
       if (!this.db) {
         logger.error('🔍 DIAGNOSTIC: Database connection is null in run(), attempting reconnection', {
           dbExists: this.db !== null,
@@ -531,7 +537,7 @@ export class DatabaseManager {
         this.incrementWrites();
         // Attempt automatic reconnection for test environments
         try {
-          //await this.reconnect();
+          await this.reconnect();
         } catch (reconnectError) {
           logger.error('🔍 DIAGNOSTIC: Database reconnection failed', {
             instanceId: this.instanceId,
@@ -674,20 +680,28 @@ export class DatabaseManager {
   }
 
   private get(sql: string, params: any[] = []): Promise<any> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       // Add initialization check and diagnostic logging
       if (this.db === null) {
         const errorMsg = `DatabaseManager.get() called before database initialization. DB state: null, initialized: ${
           this.initialized
         }, instanceId: ${this.getInstanceId()}, userId: ${this.userId}`;
         logger.error(errorMsg, { sql, params, stackTrace: new Error().stack });
-        reject(new Error(errorMsg));
+        // Attempt automatic reconnection for test environments
+        try {
+          await this.reconnect();
+        } catch (reconnectError) {
+          reject(new Error(errorMsg));
+          return;
+        }
+      }
+      if (this.db === null) {
+        reject(new Error('Database connection is still null after reconnection attempt'));
         return;
       }
-
+      const db = this.db;
       if (!this.initialized) {
-        const warningMsg = `DatabaseManager.get() called while database is initializing. DB exists: ${!!this
-          .db}, initialized: ${
+        const warningMsg = `DatabaseManager.get() called while database is initializing. DB exists: ${!!db}, initialized: ${
           this.initialized
         }, instanceId: ${this.getInstanceId()}, userId: ${this.userId}`;
         // logger.warn(warningMsg, { sql, params });
@@ -697,8 +711,7 @@ export class DatabaseManager {
           { sql }
         );
       }
-
-      this.db.get(sql, params, (err, row) => {
+      db.get(sql, params, (err, row) => {
         if (err) reject(err);
         else resolve(row);
       });
@@ -707,7 +720,6 @@ export class DatabaseManager {
 
   private async all(sql: string, params: any[] = []): Promise<any[]> {
     try {
-
       if (!this.db) {
         logger.error('🔍 DIAGNOSTIC: Database connection is null in all(), attempting reconnection', {
           dbExists: this.db !== null,
@@ -719,10 +731,9 @@ export class DatabaseManager {
           timestamp: new Date().toISOString(),
           stackTrace: new Error().stack
         });
-        
         // Attempt automatic reconnection for test environments
         try {
-          //await this.reconnect();
+          await this.reconnect();
         } catch (reconnectError) {
           logger.error('🔍 DIAGNOSTIC: Database reconnection failed in all()', {
             instanceId: this.instanceId,
@@ -734,10 +745,14 @@ export class DatabaseManager {
           throw new Error('Database not initialized and reconnection failed');
         }
       }
-
+      if (!this.db) {
+        throw new Error('Database connection is still null after reconnection attempt');
+      }
+      // this.db is guaranteed not null here
+      const db = this.db;
       const rawSqlString = this.getInterpolatedSql(sql, params);
       return new Promise((resolve, reject) => {
-        this.db!.all(sql, params, (err, rows) => {
+        db.all(sql, params, (err, rows) => {
           if (err) reject(err);
           else return resolve(rows);
         });

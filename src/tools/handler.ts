@@ -12,7 +12,7 @@ import { logger } from '../utils/logger.js';
 import { JobStatusStore } from '../database/JobStatusStore.js';
 import { JobQueue } from '../database/JobQueue.js';
 import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
-import { JobStatus, UserProfile } from '../types/index.js';
+import { JobStatus } from '../types/index.js';
 
 // Interface for user context
 export interface UserContext {
@@ -181,7 +181,7 @@ async function handleAuthenticate(args: any, context: ToolContext) {
 
 async function handleListEmails(args: any, context: ToolContext) {
   // Ensure user is authenticated
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   const userContext = args.user_context as UserContext;
@@ -209,7 +209,7 @@ async function handleListEmails(args: any, context: ToolContext) {
 }
 
 async function handleSearchEmails(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   const userContext = await args.user_context as UserContext
@@ -234,7 +234,7 @@ async function handleSearchEmails(args: any, context: ToolContext) {
 
 async function handleCategorizeEmails(args: any, context: ToolContext) {
   const userContext = args.user_context as UserContext;
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   logger.info('Categorizing emails with args:', JSON.stringify(args, null, 2));
@@ -275,7 +275,7 @@ async function handleCategorizeEmails(args: any, context: ToolContext) {
 }
 
 async function handleGetEmailStats(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -293,7 +293,7 @@ async function handleGetEmailStats(args: any, context: ToolContext) {
 }
 
 async function handleArchiveEmails(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -318,7 +318,7 @@ async function handleArchiveEmails(args: any, context: ToolContext) {
 }
 
 async function handleRestoreEmails(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -338,7 +338,7 @@ async function handleRestoreEmails(args: any, context: ToolContext) {
 }
 
 async function handleCreateArchiveRule(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -373,7 +373,7 @@ async function handleListArchiveRules(args: any, context: ToolContext) {
 }
 
 async function handleExportEmails(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -395,7 +395,7 @@ async function handleExportEmails(args: any, context: ToolContext) {
 }
 
 async function handleDeleteEmails(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   const userContext = args.user_context as UserContext;
@@ -418,7 +418,7 @@ async function handleDeleteEmails(args: any, context: ToolContext) {
 }
 
 async function handleEmptyTrash(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   const userContext = args.user_context as UserContext;
@@ -436,7 +436,7 @@ async function handleEmptyTrash(args: any, context: ToolContext) {
 }
 
 async function handleSaveSearch(args: any, context: ToolContext) {
-   if (!await context.authManager.hasValidAuth()) {
+   if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
   const userContext = args.user_context as UserContext;
@@ -465,7 +465,7 @@ async function handleListSavedSearches(args: any, context: ToolContext) {
 }
 
 async function handleGetJobStatus(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -515,7 +515,7 @@ async function handleGetJobStatus(args: any, context: ToolContext) {
 
 
 async function handleListJobs(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
    const jobStatusStore = JobStatusStore.getInstance();
@@ -533,7 +533,7 @@ async function handleListJobs(args: any, context: ToolContext) {
 }
 
 async function handleCancelJob(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -562,7 +562,7 @@ async function handleCancelJob(args: any, context: ToolContext) {
 // Cleanup automation tool handlers
 
 async function handleTriggerCleanup(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -603,7 +603,7 @@ async function handleGetSystemHealth(args: any, context: ToolContext) {
 }
 
 async function handleCreateCleanupPolicy(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -627,7 +627,7 @@ async function handleCreateCleanupPolicy(args: any, context: ToolContext) {
 }
 
 async function handleUpdateCleanupPolicy(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -657,7 +657,7 @@ async function handleListCleanupPolicies(args: any, context: ToolContext) {
 }
 
 async function handleDeleteCleanupPolicy(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -673,7 +673,7 @@ async function handleDeleteCleanupPolicy(args: any, context: ToolContext) {
 }
 
 async function handleCreateCleanupSchedule(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -695,7 +695,7 @@ async function handleCreateCleanupSchedule(args: any, context: ToolContext) {
 }
 
 async function handleUpdateCleanupAutomationConfig(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -722,7 +722,7 @@ async function handleGetCleanupMetrics(args: any, context: ToolContext) {
 }
 
 async function handleGetCleanupRecommendations(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -738,7 +738,7 @@ async function handleGetCleanupRecommendations(args: any, context: ToolContext) 
 }
 
 async function handleGetEmailDetails(args: any, context: ToolContext) {
-  if (!await context.authManager.hasValidAuth()) {
+  if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
 
@@ -805,7 +805,7 @@ async function validateUserContext(args: any, context: ToolContext): Promise<voi
  */
 async function handleRegisterUser(args: any, context: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
-    let newUserRole = args?.role || 'user';
+    let newUserRole = args?.role ?? 'user';
     // Check if caller is admin when not registering first user
     const allUsers = context.userManager.getAllUsers();
     if (allUsers.length > 0) {

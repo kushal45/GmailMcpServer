@@ -1,5 +1,6 @@
 import { AuthManager } from "../auth/AuthManager.js";
 import { DatabaseManager } from "../database/DatabaseManager.js";
+import { UserDatabaseManagerFactory } from "../database/UserDatabaseManagerFactory.js";
 import {
   EmailIndex,
   DeleteOptions,
@@ -12,89 +13,94 @@ import { gmail_v1 } from "googleapis";
 
 export class DeleteManager {
   private authManager: AuthManager;
-  private databaseManager: DatabaseManager;
+  private userDbManagerFactory: UserDatabaseManagerFactory;
 
-  constructor(authManager: AuthManager, databaseManager: DatabaseManager) {
+  constructor(authManager: AuthManager, userDbManagerFactory: UserDatabaseManagerFactory) {
     this.authManager = authManager;
-    this.databaseManager = databaseManager;
+    this.userDbManagerFactory = userDbManagerFactory;
   }
 
-  set dbManager(manager: DatabaseManager) {
-    this.databaseManager = manager;
-  }
-
-  get dbManager(): DatabaseManager {
-    return this.databaseManager;
+  /**
+   * Get user-specific database manager
+   * @param userId User ID to get database manager for
+   */
+  private async getUserDatabaseManager(userId: string): Promise<DatabaseManager> {
+    if (!userId) {
+      throw new Error('User ID is required for database operations');
+    }
+    return this.userDbManagerFactory.getUserDatabaseManager(userId);
   }
 
   async deleteEmails(
     options: DeleteOptions,
-    userContext: { user_id: string; session_id: string }
+    userContext: { user_id: string; session_id: string },
+    extra?: { forceDelay?: boolean }
   ): Promise<{ deleted: number; errors: string[] }> {
     logger.info("Starting email deletion", {
       options,
       userId: userContext.user_id,
     });
-    try {
-      // Add user context to options
-      const optionsWithUser = {
-        ...options,
-        user_id: userContext.user_id,
-      };
+    // Only catch business logic errors, let infra/auth errors propagate
+    // Get user-specific database manager
+    const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
 
-      // Get emails to delete based on criteria
-      let emails = await this.getEmailsToDelete(optionsWithUser);
-      // Only operate on emails that are not already archived (unless skipArchived is false)
-      let emailsToProcess = emails;
-      if (options.skipArchived !== false) {
-        emailsToProcess = emails.filter((e) => !e.archived);
-      }
+    // Add user context to options
+    const optionsWithUser = {
+      ...options,
+      user_id: userContext.user_id,
+    };
 
-      if (emailsToProcess.length === 0) {
-        return { deleted: 0, errors: [] };
-      }
-
-      if (options.dryRun) {
-        logger.info("Dry run - would delete emails", {
-          count: emailsToProcess.length,
-        });
-        return {
-          deleted: emailsToProcess.length,
-          errors: [`DRY RUN - Would delete ${emailsToProcess.length} emails`],
-        };
-      }
-
-      // Perform actual deletion with user context
-      const result = await this.performDeletion(emailsToProcess, userContext);
-
-      // Update database for successfully deleted emails
-      if (result.deleted > 0 && result.deleted == emailsToProcess.length) {
-        const deletdFromDb = await this.databaseManager.deleteEmailIds(
-          emailsToProcess,
-          userContext.user_id
-        );
-        if (deletdFromDb != emailsToProcess.length) {
-          result.errors.push(
-            "Deletion failed, some emails were not deleted from the database"
-          );
-        }
-      }
-
-      return result;
-    } catch (error: unknown) {
-      console.error("Error during email deletion:", (error as Error).message, {
-        stack: (error as Error).stack,
-      });
-      logger.error("Delete error:", (error as Error).message, {
-        stack: (error as Error).stack,
-      });
-      throw error;
+    // Get emails to delete based on criteria
+    let emails = await this.getEmailsToDelete(optionsWithUser);
+    // Only operate on emails that are not already archived (unless skipArchived is false)
+    let emailsToProcess = emails;
+    if (options.skipArchived !== false) {
+      emailsToProcess = emails.filter((e) => !e.archived);
     }
+
+    if (emailsToProcess.length === 0) {
+      return { deleted: 0, errors: [] };
+    }
+
+    if (options.dryRun) {
+      logger.info("Dry run - would delete emails", {
+        count: emailsToProcess.length,
+      });
+      return {
+        deleted: emailsToProcess.length,
+        errors: [`DRY RUN - Would delete ${emailsToProcess.length} emails`],
+      };
+    }
+
+    // Perform actual deletion with user context
+    const result = await this.performDeletion(emailsToProcess, userContext, extra?.forceDelay);
+
+    // Update database for successfully deleted emails
+    if (result.deleted > 0 && result.deleted == emailsToProcess.length) {
+      const deletdFromDb = await databaseManager.deleteEmailIds(
+        emailsToProcess,
+        userContext.user_id
+      );
+      if (deletdFromDb != emailsToProcess.length) {
+        result.errors.push(
+          "Deletion failed, some emails were not deleted from the database"
+        );
+      }
+    }
+
+    return result;
   }
 
   private async getEmailsToDelete(
     options: DeleteOptions
   ): Promise<EmailIndex[]> {
+    // Get user-specific database manager
+    const userId = (options as any).user_id;
+    if (!userId) {
+      throw new Error('User ID is required for email deletion operations');
+    }
+    const databaseManager = await this.getUserDatabaseManager(userId);
+
     // If a category is specified, use it directly
     if (options.category) {
       const criteria: any = { ...options.searchCriteria };
@@ -117,7 +123,7 @@ export class DeleteManager {
       logger.info("[getEmailsToDelete] Using criteria for category", {
         criteria,
       });
-      const result = await this.databaseManager.searchEmails(criteria);
+      const result = await databaseManager.searchEmails(criteria);
       logger.info("[getEmailsToDelete] Result count", { count: result.length });
       if (result.length > 0) {
         logger.info("[getEmailsToDelete] First few results", {
@@ -154,7 +160,7 @@ export class DeleteManager {
       logger.debug("[getEmailsToDelete] Using default criteria (low/medium)", {
         criteria,
       });
-      const result = await this.databaseManager.searchEmails(criteria);
+      const result = await databaseManager.searchEmails(criteria);
       logger.debug("[getEmailsToDelete] Result count", {
         count: result.length,
       });
@@ -164,7 +170,8 @@ export class DeleteManager {
 
   private async performDeletion(
     emails: EmailIndex[],
-    userContext: { user_id: string; session_id: string }
+    userContext: { user_id: string; session_id: string },
+    forceDelay?: boolean
   ): Promise<{ deleted: number; errors: string[] }> {
     // Get Gmail client for the specific user
     const gmail = await this.authManager.getGmailClient(userContext.session_id);
@@ -200,15 +207,30 @@ export class DeleteManager {
 
         // Small delay between batches
         if (i + batchSize < emails.length) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          const isTest = process.env.NODE_ENV === 'test' || process.env.CI === 'true';
+          if (forceDelay || !isTest) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
         }
       } catch (error) {
-        const errorMsg = `Batch ${
-          Math.floor(i / batchSize) + 1
-        } failed: ${error}`;
+        // Only catch and return errors for batch failures, not for auth/network/scope errors
+        // If the error is an auth/network/scope error, rethrow
+        const errMsg = (error as Error).message || String(error);
+        if (
+          errMsg.includes('Token expired') ||
+          errMsg.includes('Token has been revoked') ||
+          errMsg.includes('Token revoked') ||
+          errMsg.includes('Network error') ||
+          errMsg.includes('Rate limit exceeded') ||
+          errMsg.includes('Insufficient OAuth scope') ||
+          errMsg.includes('Insufficient scopes') ||
+          errMsg.includes('Authentication failed')
+        ) {
+          throw error;
+        }
+        const errorMsg = `Batch ${Math.floor(i / batchSize) + 1} failed: ${error}`;
         logger.error(errorMsg);
         errors.push(errorMsg);
-
         // Stop processing on error to prevent partial deletion
         break;
       }
@@ -221,6 +243,9 @@ export class DeleteManager {
     emails: EmailIndex[],
     userId: string
   ): Promise<void> {
+    // Get user-specific database manager
+    const databaseManager = await this.getUserDatabaseManager(userId);
+
     // In a real implementation, you might want to:
     // 1. Remove from database
     // 2. Or mark with a "deleted" flag
@@ -230,7 +255,7 @@ export class DeleteManager {
       count: emails.length,
       userId,
     });
-    const deleted = await this.databaseManager.deleteEmailIds(emails, userId);
+    const deleted = await databaseManager.deleteEmailIds(emails, userId);
     logger.info("Emails deleted from DB: ", { count: deleted, userId });
   }
 
@@ -238,8 +263,11 @@ export class DeleteManager {
     user_id: string;
     session_id: string;
   }): Promise<any> {
+    // Get user-specific database manager
+    const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
     // Use the database's getEmailStatistics for accuracy
-    const statsRaw = await this.databaseManager.getEmailStatistics(
+    const statsRaw = await databaseManager.getEmailStatistics(
       false,
       userContext.user_id
     );
@@ -440,11 +468,11 @@ export class DeleteManager {
 
             if (action === "delete") {
               const result = userContext
-                ? await this.performDeletion(safeEmails, userContext)
+                ? await this.performDeletion(safeEmails, userContext, false)
                 : await this.performDeletion(safeEmails, {
-                    user_id: this.databaseManager.getUserId() || "default",
+                    user_id: "system", // System cleanup without user context
                     session_id: "default",
-                  });
+                  }, false);
               totalDeleted += result.deleted;
               totalFailed += safeEmails.length - result.deleted;
               allErrors.push(...result.errors);
@@ -471,9 +499,10 @@ export class DeleteManager {
 
         // Delay between batches to avoid overwhelming the system
         if (i + batch_size < emails.length && delay_between_batches_ms > 0) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, delay_between_batches_ms)
-          );
+          const isTest = process.env.NODE_ENV === 'test' || process.env.CI === 'true';
+          if (!isTest) {
+            await new Promise((resolve) => setTimeout(resolve, delay_between_batches_ms));
+          }
         }
       } catch (error) {
         const errorMsg = `Batch ${batchNumber} failed: ${error}`;
@@ -586,8 +615,15 @@ export class DeleteManager {
     emails: EmailIndex[],
     userId?: string
   ): Promise<void> {
+    if (!userId) {
+      throw new Error('User ID is required for archiving emails');
+    }
+
+    // Get user-specific database manager
+    const databaseManager = await this.getUserDatabaseManager(userId);
+
     const emailIds = emails.map((email) => email.id);
-    await this.databaseManager.markEmailsAsDeleted(emailIds, userId);
+    await databaseManager.markEmailsAsDeleted(emailIds, userId);
   }
 
   /**
@@ -603,11 +639,17 @@ export class DeleteManager {
     total_storage_recoverable: number;
   }> {
     try {
+      if (!userContext?.user_id) {
+        throw new Error('User context is required for cleanup statistics');
+      }
+
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
       // Get all non-archived emails for the specific user
-      const allEmails = await this.databaseManager.searchEmails({
+      const allEmails = await databaseManager.searchEmails({
         archived: false,
-        user_id:
-          userContext?.user_id || this.databaseManager.getUserId() || "default",
+        user_id: userContext.user_id,
       });
 
       const stats = {
@@ -660,8 +702,7 @@ export class DeleteManager {
     // For safety, this should be implemented with extreme caution
     logger.info("Auto-deletion rules would be configured here", {
       rules,
-      userId:
-        userContext?.user_id || this.databaseManager.getUserId() || "default",
+      userId: userContext?.user_id || "system",
     });
 
     // In a real implementation:

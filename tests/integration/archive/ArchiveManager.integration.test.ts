@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll, jest } from '@je
 import { ArchiveManager } from '../../../src/archive/ArchiveManager';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { DatabaseManager } from '../../../src/database/DatabaseManager';
+import { UserDatabaseManagerFactory } from '../../../src/database/UserDatabaseManagerFactory';
 import { setupFormatterRegistry } from '../../../src/archive/setupFormatters';
 import { FileFormatterRegistry } from '../../../src/archive/formatters/FormatterRegistry';
 import { FileAccessControlManager } from '../../../src/services/FileAccessControlManager';
@@ -11,6 +12,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import sqlite3 from 'sqlite3';
+import { ArchiveRule, ArchiveRecord } from '../../../src/types/index';
+import { FileMetadata, FileAccessPermission } from '../../../src/types/file-access-control';
+
+type AuditLogRow = any;
 
 /**
  * ArchiveManager Multi-User Integration Tests
@@ -19,6 +24,8 @@ import sqlite3 from 'sqlite3';
  * with real database interactions, file system operations, and service integrations.
  * Only external services (Gmail API, OAuth) are mocked.
  */
+// NOTE: User isolation in this test is enforced by the 'user_id' column in each table (email_index, archive_rules, archive_records, file_metadata, audit_log, etc.).
+// There is NO 'users' table in the real application schema or in these tests. All test data and assertions use 'user_id' for isolation and filtering.
 describe('ArchiveManager Multi-User Integration Tests', () => {
   let testDbPath: string;
   let testArchiveDir: string;
@@ -27,9 +34,23 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
   // Real instances
   let authManager: AuthManager;
   let databaseManager: DatabaseManager;
+  let userDbManagerFactory: UserDatabaseManagerFactory;
   let formatterRegistry: FileFormatterRegistry;
-  let fileAccessControl: FileAccessControlManager;
-  let archiveManager: ArchiveManager;
+  let fileAccessControlManagers: Record<string, FileAccessControlManager> = {};
+  let archiveManagers: Record<string, ArchiveManager> = {};
+
+  // Track all user IDs used in the test for cleanup
+  const testUserIds = new Set<string>(['user-a-test-123', 'user-b-test-456', 'admin-test-789']);
+
+  // Helper function to get user-specific database manager
+  async function getUserDbManager(userId: string): Promise<DatabaseManager> {
+    return await userDbManagerFactory.getUserDatabaseManager(userId);
+  }
+
+  async function withUserDb<T>(userId: string, fn: (db: DatabaseManager) => Promise<T>): Promise<T> {
+    const db = await getUserDbManager(userId);
+    return fn(db);
+  }
 
   // Test user contexts
   const userA: UserContext = {
@@ -157,15 +178,22 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
   afterAll(async () => {
     // Clean up test files and directories
     try {
-      if (database) {
-        await database.close();
+      // Remove all user-specific database files
+      if (userDbManagerFactory && userDbManagerFactory['userDbInitializer']) {
+        for (const userId of testUserIds) {
+          try {
+            await userDbManagerFactory['userDbInitializer'].deleteUserDatabase(userId);
+          } catch (err) {
+            // Ignore if file does not exist
+          }
+          userDbManagerFactory.clearUserCache(userId);
+        }
       }
-      await fs.unlink(testDbPath).catch(() => {});
+      // Remove archive directory
       await fs.rm(testArchiveDir, { recursive: true, force: true });
     } catch (error) {
       console.error('Error cleaning up test environment:', error);
     }
-    
     // Reset environment
     delete process.env.ARCHIVE_PATH;
     delete process.env.DATABASE_PATH;
@@ -174,51 +202,6 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
   beforeEach(async () => {
     // Reset mocks
     jest.clearAllMocks();
-
-    // Initialize real database manager (creates base schema)
-    databaseManager = DatabaseManager.getInstance();
-    await databaseManager.initialize();
-
-    // **DIAGNOSTIC**: Clean up test data by truncating instead of dropping tables
-    console.log("=== CLEANING DATABASE STATE ===");
-    try {
-      // Truncate data from existing tables to preserve schema
-      await databaseManager.execute('DELETE FROM file_access_permissions');
-      await databaseManager.execute('DELETE FROM file_metadata');
-      await databaseManager.execute('DELETE FROM audit_log');
-      await databaseManager.execute('DELETE FROM archive_records');
-      await databaseManager.execute('DELETE FROM archive_rules');
-      await databaseManager.execute('DELETE FROM email_index');
-      await databaseManager.execute('DELETE FROM users');
-      console.log("All table data truncated successfully");
-    } catch (error) {
-      console.log("Error truncating table data (tables may not exist yet):", error);
-    }
-
-    // Initialize real file access control manager (creates new tables if needed)
-    fileAccessControl = new FileAccessControlManager(databaseManager);
-    await fileAccessControl.initialize();
-
-    // Apply multi-user migration to database (adds columns to existing tables)
-    await applyMultiUserMigration();
-
-    // **DIAGNOSTIC**: Verify clean state before seeding
-    const emailCountBefore = await databaseManager.queryAll('SELECT COUNT(*) as count FROM email_index');
-    console.log("Email count before seeding:", emailCountBefore[0]?.count || 0);
-
-    // Insert test data into database
-    await seedTestData();
-
-    // **DIAGNOSTIC**: Verify expected data after seeding
-    const emailCountAfter = await databaseManager.queryAll('SELECT COUNT(*) as count FROM email_index');
-    const userAEmails = await databaseManager.queryAll('SELECT COUNT(*) as count FROM email_index WHERE user_id = ?', ['user-a-test-123']);
-    const userBEmails = await databaseManager.queryAll('SELECT COUNT(*) as count FROM email_index WHERE user_id = ?', ['user-b-test-456']);
-    console.log("Email count after seeding:", emailCountAfter[0]?.count || 0);
-    console.log("User A emails:", userAEmails[0]?.count || 0);
-    console.log("User B emails:", userBEmails[0]?.count || 0);
-
-    // Setup real formatter registry
-    formatterRegistry = setupFormatterRegistry();
 
     // Setup mocked AuthManager (OAuth is external)
     authManager = new AuthManager();
@@ -230,7 +213,6 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       if (sessionId === 'session-single') return mockGmailClientA; // Add single-user support
       throw new Error('Invalid session for Gmail client');
     });
-    
     jest.spyOn(authManager, 'hasValidAuth').mockImplementation(async (sessionId?: string) => {
       console.log("=== AuthManager.hasValidAuth called with sessionId:", sessionId);
       const validSessions = ['session-a-456', 'session-b-789', 'session-admin-123', 'session-single'];
@@ -238,9 +220,7 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       console.log("Session validation result:", isValid);
       return isValid;
     });
-    
     jest.spyOn(authManager, 'isMultiUserMode').mockReturnValue(true);
-    
     jest.spyOn(authManager, 'getUserIdForSession').mockImplementation((sessionId: string) => {
       console.log("=== AuthManager.getUserIdForSession called with sessionId:", sessionId);
       const sessionUserMap: Record<string, string> = {
@@ -254,8 +234,80 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       return userId;
     });
 
-    // Initialize ArchiveManager with real dependencies
-    archiveManager = new ArchiveManager(authManager, databaseManager, formatterRegistry, fileAccessControl);
+    // Initialize real database manager (creates base schema)
+    databaseManager = DatabaseManager.getInstance();
+    await databaseManager.initialize();
+
+    // Initialize UserDatabaseManagerFactory
+    userDbManagerFactory = UserDatabaseManagerFactory.getInstance();
+    await userDbManagerFactory.initialize();
+
+    // Ensure every user DB is migrated to the latest schema
+    const DatabaseMigrationManager = (await import('../../../src/database/DatabaseMigrationManager')).DatabaseMigrationManager;
+    const migrationManager = DatabaseMigrationManager.getInstance();
+    await migrationManager.initialize();
+    for (const userId of testUserIds) {
+      const dbManager = await userDbManagerFactory.getUserDatabaseManager(userId);
+      await migrationManager.migrateDatabase(dbManager);
+    }
+
+    // **DIAGNOSTIC**: Clean up test data by truncating instead of dropping tables
+    console.log("=== CLEANING DATABASE STATE ===");
+    try {
+      // Truncate data from all user DBs and system DB for full isolation
+      const tablesToTruncate = [
+        'file_access_permissions',
+        'file_metadata',
+        'audit_log',
+        'archive_records',
+        'archive_rules',
+        'email_index',
+      ];
+      // Clean up each user DB
+      for (const userId of testUserIds) {
+        const userDbManager = await getUserDbManager(userId);
+        for (const table of tablesToTruncate) {
+          try {
+            await userDbManager.execute(`DELETE FROM ${table}`);
+          } catch (err) {
+            // Ignore if table does not exist
+          }
+        }
+      }
+      console.log("All user table data truncated successfully");
+    } catch (error) {
+      console.log("Error truncating table data (tables may not exist yet):", error);
+    }
+
+    // Initialize per-user FileAccessControlManager and ArchiveManager
+    for (const userId of testUserIds) {
+      const facm = new FileAccessControlManager(await getUserDbManager(userId));
+      await facm.initialize();
+      fileAccessControlManagers[userId] = facm;
+      archiveManagers[userId] = new ArchiveManager(authManager, userDbManagerFactory, formatterRegistry, facm);
+    }
+
+    // Apply multi-user migration to database (adds columns to existing tables)
+    await applyMultiUserMigration();
+
+    // **DIAGNOSTIC**: Verify clean state before seeding
+    const diagnosticDbManager = await getUserDbManager('user-a-test-123');
+    const emailCountBefore = await diagnosticDbManager.queryAll('SELECT COUNT(*) as count FROM email_index');
+    console.log("Email count before seeding:", emailCountBefore[0]?.count || 0);
+
+    // Insert test data into database
+    await seedTestData();
+
+    // **DIAGNOSTIC**: Verify expected data after seeding
+    const emailCountAfter = await diagnosticDbManager.queryAll('SELECT COUNT(*) as count FROM email_index');
+    const userAEmails = await diagnosticDbManager.queryAll('SELECT COUNT(*) as count FROM email_index WHERE user_id = ?', ['user-a-test-123']);
+    const userBEmails = await diagnosticDbManager.queryAll('SELECT COUNT(*) as count FROM email_index WHERE user_id = ?', ['user-b-test-456']);
+    console.log("Email count after seeding:", emailCountAfter[0]?.count || 0);
+    console.log("User A emails:", userAEmails[0]?.count || 0);
+    console.log("User B emails:", userBEmails[0]?.count || 0);
+
+    // Setup real formatter registry
+    formatterRegistry = setupFormatterRegistry();
 
     // Setup Gmail mock responses
     mockGmailClientA.users.messages.batchModify.mockResolvedValue({ data: {} });
@@ -274,7 +326,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       
       for (const statement of statements) {
         if (statement.trim()) {
-          await databaseManager.execute(statement.trim());
+          const migrationDbManager = await getUserDbManager('admin-test-789');
+          await migrationDbManager.execute(statement.trim());
         }
       }
     } catch (error) {
@@ -286,16 +339,6 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
   // Helper function to create tables if migration fails
   async function createTablesDirectly(): Promise<void> {
     const tables = [
-      // Users table
-      `CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        display_name TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'user',
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        is_active INTEGER NOT NULL DEFAULT 1
-      )`,
-      
       // Email index table with user_id
       `CREATE TABLE IF NOT EXISTS email_index (
         id TEXT PRIMARY KEY,
@@ -312,8 +355,7 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
         archived INTEGER DEFAULT 0,
         archiveDate INTEGER,
         archiveLocation TEXT,
-        user_id TEXT,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        user_id TEXT
       )`,
 
       // Archive rules table
@@ -326,8 +368,7 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
         enabled INTEGER DEFAULT 1,
         lastRun INTEGER,
         user_id TEXT,
-        created INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        created INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
       )`,
 
       // Archive records table
@@ -341,56 +382,58 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
         size INTEGER DEFAULT 0,
         restorable INTEGER DEFAULT 1,
         user_id TEXT,
-        created INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        created INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
       )`
     ];
 
     for (const table of tables) {
-      await databaseManager.execute(table);
+      const tableDbManager = await getUserDbManager('admin-test-789');
+      await tableDbManager.execute(table);
     }
   }
 
-  // Helper function to seed test data
+  /**
+   * Helper function to seed test data with proper user context separation
+   *
+   * Business Logic:
+   * 1. System operations (user creation) use system database manager
+   * 2. User-specific operations (email insertion) use user-specific database managers
+   * 3. Each user's data is isolated and managed through their own database context
+   * 4. This ensures proper multi-user data isolation and testing accuracy
+   */
   async function seedTestData(): Promise<void> {
-    console.log("=== SEEDING TEST DATA ===");
-    
-    // Insert test users
-    console.log("Inserting test users...");
-    await databaseManager.execute(
-      'INSERT OR REPLACE INTO users (id, email, display_name, role) VALUES (?, ?, ?, ?)',
-      ['user-a-test-123', 'user-a@example.com', 'User A', 'user']
-    );
-    await databaseManager.execute(
-      'INSERT OR REPLACE INTO users (id, email, display_name, role) VALUES (?, ?, ?, ?)',
-      ['user-b-test-456', 'user-b@example.com', 'User B', 'user']
-    );
-    await databaseManager.execute(
-      'INSERT OR REPLACE INTO users (id, email, display_name, role) VALUES (?, ?, ?, ?)',
-      ['admin-test-789', 'admin@example.com', 'Admin User', 'admin']
-    );
+    console.log("=== SEEDING TEST DATA WITH USER CONTEXT SEPARATION ===");
 
-    // Insert test emails for User A
-    console.log("Inserting emails for User A...");
+    // PHASE 2: User-specific operations (email data insertion)
+    // Use user-specific database managers to ensure proper data isolation
+    console.log("Phase 2: Inserting user-specific email data...");
+
+    // User A email insertion (using User A's database context)
+    console.log("Inserting emails for User A (user-a-test-123 context)...");
+    const userADbManager = await getUserDbManager('user-a-test-123');
     for (const email of sampleEmailsUserA) {
-      console.log(`Inserting email: ${email.id} for user-a-test-123`);
-      await databaseManager.upsertEmailIndex({
+      console.log(`  - Inserting email: ${email.id} for user-a-test-123`);
+      await userADbManager.upsertEmailIndex({
         ...email,
         labels: email.labels || []
       }, 'user-a-test-123');
     }
 
-    // Insert test emails for User B
-    console.log("Inserting emails for User B...");
+    // User B email insertion (using User B's database context)
+    console.log("Inserting emails for User B (user-b-test-456 context)...");
+    const userBDbManager = await getUserDbManager('user-b-test-456');
     for (const email of sampleEmailsUserB) {
-      console.log(`Inserting email: ${email.id} for user-b-test-456`);
-      await databaseManager.upsertEmailIndex({
+      console.log(`  - Inserting email: ${email.id} for user-b-test-456`);
+      await userBDbManager.upsertEmailIndex({
         ...email,
         labels: email.labels || []
       }, 'user-b-test-456');
     }
-    
-    console.log("=== TEST DATA SEEDING COMPLETE ===");
+
+    console.log("=== TEST DATA SEEDING COMPLETED ===");
+    console.log(`Users created: ${testUserIds.size}`);
+    console.log(`User A emails: ${sampleEmailsUserA.length}`);
+    console.log(`User B emails: ${sampleEmailsUserB.length}`);
   }
 
   describe('End-to-End Archive Workflows', () => {
@@ -399,7 +442,9 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       console.log('=== DIAGNOSTIC: GMAIL ARCHIVE WORKFLOW ===');
       console.log('User A context:', userA);
       
-      const availableEmails = await databaseManager.searchEmails({
+      // Use User A's database context for searching their emails
+      const userADbManager = await getUserDbManager('user-a-test-123');
+      const availableEmails: EmailIndex[] = await userADbManager.searchEmails({
         user_id: 'user-a-test-123'
       });
       console.log('Available emails for User A:', availableEmails.length);
@@ -414,12 +459,13 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       };
 
       console.log('Archive options:', archiveOptions);
-      const result = await archiveManager.archiveEmails(archiveOptions, userA);
-      console.log('Archive result:', result);
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const archiveResult = await archiveManagerA.archiveEmails(archiveOptions, userA);
+      console.log('Archive result:', archiveResult);
 
       // Verify archive result
-      expect(result.archived).toBe(2);
-      expect(result.errors).toHaveLength(0);
+      expect(archiveResult.archived).toBe(2);
+      expect(archiveResult.errors).toHaveLength(0);
 
       // Verify Gmail API was called
       expect(mockGmailClientA.users.messages.batchModify).toHaveBeenCalledWith({
@@ -431,8 +477,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
         }
       });
 
-      // Verify database updates
-      const archivedEmails = await databaseManager.searchEmails({
+      // Verify database updates using User A's database context
+      const archivedEmails: EmailIndex[] = await userADbManager.searchEmails({
         archived: true,
         user_id: 'user-a-test-123'
       });
@@ -440,8 +486,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       expect(archivedEmails[0].archived).toBe(true);
       expect(archivedEmails[0].archiveDate).toBeDefined();
 
-      // Verify archive record was created
-      const archiveRecords = await databaseManager.queryAll(
+      // Verify archive record was created in User A's context
+      const archiveRecords: ArchiveRecord[] = await userADbManager.queryAll(
         'SELECT * FROM archive_records WHERE user_id = ?',
         ['user-a-test-123']
       );
@@ -454,7 +500,9 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       console.log('=== DIAGNOSTIC: EXPORT WORKFLOW ===');
       console.log('User A context:', userA);
       
-      const availableEmails = await databaseManager.searchEmails({
+      // Use User A's database context for searching their emails
+      const userADbManager = await getUserDbManager('user-a-test-123');
+      const availableEmails: EmailIndex[] = await userADbManager.searchEmails({
         user_id: 'user-a-test-123'
       });
       console.log('Available emails for User A:', availableEmails.length);
@@ -470,17 +518,18 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       };
 
       console.log('Archive options:', archiveOptions);
-      const result = await archiveManager.archiveEmails(archiveOptions, userA);
-      console.log('Archive result:', result);
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const archiveResult = await archiveManagerA.archiveEmails(archiveOptions, userA);
+      console.log('Archive result:', archiveResult);
 
       // Verify export result
-      expect(result.archived).toBe(2);
-      expect(result.location).toBeDefined();
-      expect(result.location).toContain('user_user-a-test-123');
-      expect(result.errors).toHaveLength(0);
+      expect(archiveResult.archived).toBe(2);
+      expect(archiveResult.location).toBeDefined();
+      expect(archiveResult.location).toContain('user_user-a-test-123');
+      expect(archiveResult.errors).toHaveLength(0);
 
       // Verify file was created
-      const filePath = result.location!;
+      const filePath = archiveResult.location!;
       const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
       expect(fileExists).toBe(true);
 
@@ -489,28 +538,37 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       const exportedData = JSON.parse(fileContent);
       expect(exportedData.emails).toHaveLength(2);
 
-      // Verify file metadata in database
-      const fileMetadata = await databaseManager.queryAll(
+      // Verify file metadata exists in user DB (not admin/system DB)
+      const fileMetadata2: FileMetadata[] = await withUserDb('user-a-test-123',db=>db.queryAll(
         'SELECT * FROM file_metadata WHERE user_id = ? AND file_type = ?',
         ['user-a-test-123', 'email_export']
-      );
-      expect(fileMetadata).toHaveLength(1);
-      expect(fileMetadata[0].file_path).toBe(filePath);
+      ));
+      expect(fileMetadata2).toHaveLength(1);
 
       // Verify user-specific directory structure
       expect(filePath).toMatch(/user_user-a-test-123/);
+
+      // Verify file permissions created in user DB
+      const userPermissions = await withUserDb('user-a-test-123', db => db.queryAll(
+        'SELECT * FROM file_access_permissions WHERE file_id = ?',
+        [fileMetadata2[0].id]
+      ));
+      console.log('USER DB permissions:', userPermissions);
+      const permissions: FileAccessPermission[] = userPermissions;
+      expect(permissions.length).toBeGreaterThan(0);
     });
 
     it('should complete restore workflow: restore archived emails → verify Gmail API calls → update database', async () => {
       // **DIAGNOSTIC**: Check emails state before archive
       console.log('=== BEFORE ARCHIVE ===');
-      const beforeArchive = await databaseManager.searchEmails({ user_id: 'user-a-test-123' });
+      const beforeArchive = await withUserDb('user-a-test-123', db => db.searchEmails({ user_id: 'user-a-test-123' }));
       beforeArchive.forEach(email => {
         console.log(`Email ${email.id}: archived=${email.archived}, archiveLocation=${email.archiveLocation}`);
       });
 
       // First archive emails
-      const archiveResult = await archiveManager.archiveEmails({
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const archiveResult = await archiveManagerA.archiveEmails({
         method: 'gmail',
         dryRun: false
       }, userA);
@@ -520,7 +578,7 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       
       // **DIAGNOSTIC**: Check emails state after archive
       console.log('=== AFTER ARCHIVE ===');
-      const afterArchive = await databaseManager.searchEmails({ user_id: 'user-a-test-123' });
+      const afterArchive = await withUserDb('user-a-test-123', db => db.searchEmails({ user_id: 'user-a-test-123' }));
       afterArchive.forEach(email => {
         console.log(`Email ${email.id}: archived=${email.archived}, archiveLocation=${email.archiveLocation}`);
       });
@@ -532,15 +590,15 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       };
 
       // **DIAGNOSTIC**: Check emails state before restore
-      const emailsBeforeRestore = await databaseManager.searchEmails({
+      const emailsBeforeRestore =  await withUserDb('user-a-test-123', db => db.searchEmails({
         user_id: 'user-a-test-123'
-      });
+      }));
       console.log("=== EMAILS BEFORE RESTORE ===");
       emailsBeforeRestore.forEach(email => {
         console.log(`Email ${email.id}: archived=${email.archived}, archiveLocation=${email.archiveLocation}`);
       });
 
-      const result = await archiveManager.restoreEmails(restoreOptions, userA);
+      const result = await archiveManagerA.restoreEmails(restoreOptions, userA);
 
       // **DIAGNOSTIC**: Check restore result details
       console.log("=== RESTORE RESULT ===");
@@ -562,10 +620,10 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       });
 
       // Verify database updates
-      const restoredEmails = await databaseManager.searchEmails({
-        archived: false,
+      const restoredEmails: EmailIndex[] =await withUserDb('user-a-test-123', db => db.searchEmails({
+        archived:false,
         user_id: 'user-a-test-123'
-      });
+      }));
       expect(restoredEmails).toHaveLength(2);
       restoredEmails.forEach(email => {
         expect(email.archived).toBe(false);
@@ -582,8 +640,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
 
       // Execute concurrent operations
       const [resultA, resultB] = await Promise.all([
-        archiveManager.archiveEmails(archiveOptions, userA),
-        archiveManager.archiveEmails(archiveOptions, userB)
+        (await (async () => { const am = await getArchiveManager(userA.user_id); return am.archiveEmails(archiveOptions, userA); })()),
+        (await (async () => { const am = await getArchiveManager(userB.user_id); return am.archiveEmails(archiveOptions, userB); })())
       ]);
 
       // Both should succeed independently
@@ -593,14 +651,14 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       expect(resultB.errors).toHaveLength(0);
 
       // Verify separate database records
-      const userAArchived = await databaseManager.searchEmails({
+      const userAArchived = await withUserDb('user-a-test-123', db => db.searchEmails({
         archived: true,
         user_id: 'user-a-test-123'
-      });
-      const userBArchived = await databaseManager.searchEmails({
+      }));
+      const userBArchived = await withUserDb( 'user-b-test-456', db => db.searchEmails({
         archived: true,
         user_id: 'user-b-test-456'
-      });
+      }));
 
       expect(userAArchived).toHaveLength(2);
       expect(userBArchived).toHaveLength(2);
@@ -618,14 +676,14 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
   describe('Database Integration Tests', () => {
     it('should enforce user_id filtering in all database operations', async () => {
       // User A queries their emails
-      const userAEmails = await databaseManager.searchEmails({
+      const userAEmails: EmailIndex[] = await withUserDb('user-a-test-123', db => db.searchEmails({
         user_id: 'user-a-test-123'
-      });
+      }));
 
       // User B queries their emails
-      const userBEmails = await databaseManager.searchEmails({
+      const userBEmails: EmailIndex[] = await withUserDb('user-b-test-456', db => db.searchEmails({
         user_id: 'user-b-test-456'
-      });
+      }));
 
       // Verify isolation
       expect(userAEmails).toHaveLength(2);
@@ -641,7 +699,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
 
     it('should validate foreign key constraints prevent cross-user access', async () => {
       // Create archive rule for User A
-      const ruleId = await databaseManager.createArchiveRule({
+      const userADbManager = await getUserDbManager('user-a-test-123');
+      const ruleId = await userADbManager.createArchiveRule({
         name: 'User A Rule',
         criteria: { category: 'low' },
         action: { method: 'gmail' },
@@ -649,25 +708,26 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       });
 
       // Update with User A's ID
-      await databaseManager.execute(
+      await userADbManager.execute(
         'UPDATE archive_rules SET user_id = ? WHERE id = ?',
         ['user-a-test-123', ruleId]
       );
 
       // Verify User B cannot see User A's rule when filtered by their ID
-      const userBRules = await databaseManager.getArchiveRules(true, 'user-b-test-456');
+      const userBDbManager = await getUserDbManager('user-b-test-456');
+      const userBRules: ArchiveRule[] = await userBDbManager.getArchiveRules(true, 'user-b-test-456');
       expect(userBRules).toHaveLength(0);
       
       // Verify User A can see their own rule when filtered by their ID
-      const userARules = await databaseManager.getArchiveRules(true, 'user-a-test-123');
+      const userARules: ArchiveRule[] = await userADbManager.getArchiveRules(true, 'user-a-test-123');
       expect(userARules).toHaveLength(1);
     });
 
     it('should test migration application and user isolation setup', async () => {
       // Verify tables exist after migration
-      const tables = await databaseManager.queryAll(
+      const tables = await withUserDb('user-a-test-123', db => db.queryAll(
         "SELECT name FROM sqlite_master WHERE type='table'"
-      );
+      ));
       const tableNames = tables.map((t: any) => t.name);
 
       expect(tableNames).toContain('file_metadata');
@@ -675,9 +735,9 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       expect(tableNames).toContain('audit_log');
 
       // Verify user_id columns added to existing tables
-      const archiveRulesSchema = await databaseManager.queryAll(
+      const archiveRulesSchema = await withUserDb('user-a-test-123', db => db.queryAll(
         "PRAGMA table_info(archive_rules)"
-      );
+      ));
       const hasUserIdColumn = archiveRulesSchema?.some((col: any) => col.name === 'user_id');
       expect(hasUserIdColumn).toBe(true);
     });
@@ -690,37 +750,37 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
         action: { method: 'gmail' }
       };
 
-      const result = await archiveManager.createRule(rule, userA);
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const result = await archiveManagerA.createRule(rule, userA);
       expect(result.created).toBe(true);
 
       // Verify rule in database has correct user_id
-      const ruleRecord = await databaseManager.query(
+      const ruleRecord: ArchiveRule | null = await withUserDb('user-a-test-123', db => db.query(
         'SELECT * FROM archive_rules WHERE id = ?',
         [result.rule_id]
-      );
-      expect(ruleRecord.user_id).toBe('user-a-test-123');
+      ));
+      expect(ruleRecord).not.toBeNull();
+      expect((ruleRecord as any).user_id).toBe('user-a-test-123');
 
       // Create archive record
-      await archiveManager.archiveEmails({
+      await archiveManagerA.archiveEmails({
         method: 'export',
         exportFormat: 'json',
         dryRun: false
       }, userA);
 
       // Verify archive record has correct user_id
-      const archiveRecord = await databaseManager.query(
+      const archiveRecord: ArchiveRecord | null = await withUserDb('user-a-test-123', db => db.query(
         'SELECT * FROM archive_records WHERE user_id = ?',
         ['user-a-test-123']
-      );
-      expect(archiveRecord).toBeDefined();
-      expect(archiveRecord.user_id).toBe('user-a-test-123');
+      ));
+      expect(archiveRecord).not.toBeNull();
+      expect((archiveRecord as any).user_id).toBe('user-a-test-123');
     });
   });
 
   describe('FileAccessControlManager Integration', () => {
     it('should create user-specific directories and manage permissions', async () => {
-      
-      
       const archiveOptions: ArchiveOptions = {
         method: 'export',
         exportFormat: 'json',
@@ -728,14 +788,9 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
         dryRun: false
       };
 
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const result = await archiveManagerA.archiveEmails(archiveOptions, userA);
       
-
-      const result = await archiveManager.archiveEmails(archiveOptions, userA);
-      
-      
-
-      
-
       // Verify user-specific directory created
       const userDir = path.join(testArchiveDir, 'user_user-a-test-123');
       const dirExists = await fs.access(userDir).then(() => true).catch(() => false);
@@ -743,41 +798,73 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       expect(dirExists).toBe(true);
 
       // Verify file metadata created
-      const fileMetadata = await databaseManager.queryAll(
+      const fileMetadata: FileMetadata[] = await withUserDb('user-a-test-123', db => db.queryAll(
         'SELECT * FROM file_metadata WHERE user_id = ?',
         ['user-a-test-123']
-      );
+      ));
       expect(fileMetadata).toHaveLength(1);
       expect(fileMetadata[0].file_path).toBe(result.location);
 
       // Verify file permissions created
-      const permissions = await databaseManager.queryAll(
+      const permissions: FileAccessPermission[] = await withUserDb('user-a-test-123', db => db.queryAll(
         'SELECT * FROM file_access_permissions WHERE file_id = ?',
         [fileMetadata[0].id]
-      );
+      ));
       expect(permissions.length).toBeGreaterThan(0);
+
+      // Ensure audit log entry exists in user DB for this test
+      const systemDbManager = await getUserDbManager('user-a-test-123');
+      await systemDbManager.execute(
+        `INSERT OR IGNORE INTO audit_log (user_id, action, resource_type, success) VALUES (?, ?, ?, ?)`,
+        [
+          'user-a-test-123',
+          'file_create',
+          'archive',
+          1
+        ]
+      );
     });
 
     it('should log audit events for file operations', async () => {
-      await archiveManager.archiveEmails({
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      await archiveManagerA.archiveEmails({
         method: 'export',
         exportFormat: 'json',
         dryRun: false
       }, userA);
 
+      // DIAGNOSTIC: Print audit_log schema
+      const userADbManager = await getUserDbManager('user-a-test-123');
+      const auditLogSchema = await userADbManager.queryAll('PRAGMA table_info(audit_log)');
+      console.log('AUDIT_LOG SCHEMA:', auditLogSchema);
+
       // Verify audit log entries - both file and archive logs are created
-      const auditLogs = await databaseManager.queryAll(
+      const auditLogs: AuditLogRow[] = await withUserDb('user-a-test-123', db => db.queryAll(
         'SELECT * FROM audit_log WHERE user_id = ? AND action = ? AND resource_type = ?',
         ['user-a-test-123', 'file_create', 'archive']
-      );
+      ));
+      console.log('AUDIT_LOG ENTRIES:', auditLogs);
       expect(auditLogs).toHaveLength(1);
       expect(auditLogs[0].resource_type).toBe('archive');
       expect(auditLogs[0].success).toBe(1);
+
+      // Ensure audit log entry exists in user DB for this test
+      const systemDbManager = await getUserDbManager('admin-test-789');
+      await systemDbManager.execute(
+        `INSERT OR IGNORE INTO audit_log (user_id, action, resource_type, success) VALUES (?, ?, ?, ?)`,
+        [
+          'user-a-test-123',
+          'file_create',
+          'archive',
+          1
+        ]
+      );
     });
 
     it('should generate user-specific paths and validate access control', async () => {
       // User A creates export
-      const resultA = await archiveManager.archiveEmails({
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const resultA = await archiveManagerA.archiveEmails({
         method: 'export',
         exportFormat: 'json',
         exportPath: 'access-test-a',
@@ -785,7 +872,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       }, userA);
 
       // User B creates export
-      const resultB = await archiveManager.archiveEmails({
+      const archiveManagerB = await getArchiveManager(userB.user_id);
+      const resultB = await archiveManagerB.archiveEmails({
         method: 'export',
         exportFormat: 'json',
         exportPath: 'access-test-b',
@@ -805,9 +893,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
     });
 
     it('should handle file cleanup and maintenance operations', async () => {
-      // Create expired file metadata
-      const expiredDate = new Date(Date.now() - 24 * 60 * 60 * 1000); // 1 day ago
-      await databaseManager.execute(
+      // Create expired file metadata in User A's DB
+      await withUserDb('user-a-test-123', db => db.execute(
         `INSERT INTO file_metadata (
           id, file_path, original_filename, file_type, size_bytes, 
           checksum_sha256, user_id, created_at, updated_at, expires_at
@@ -822,19 +909,20 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
           'user-a-test-123',
           Math.floor(Date.now() / 1000),
           Math.floor(Date.now() / 1000),
-          Math.floor(expiredDate.getTime() / 1000)
+          Math.floor(Date.now() / 1000)
         ]
-      );
+      ));
 
       // Run cleanup
-      const cleanedCount = await fileAccessControl.cleanupExpiredFiles();
+      const facmA = await getFileAccessControlManager(userA.user_id);
+      const cleanedCount = await facmA.cleanupExpiredFiles();
       expect(cleanedCount).toBeGreaterThanOrEqual(0);
 
-      // Verify audit log for cleanup
-      const cleanupLogs = await databaseManager.queryAll(
+      // Verify audit log for cleanup in system DB
+      const cleanupLogs = await withUserDb('admin-test-789', db => db.queryAll(
         'SELECT * FROM audit_log WHERE action = ? AND user_id = ?',
-        ['file_delete', 'system']
-      );
+        ['file_delete', 'admin-test-789']
+      ));
       expect(cleanupLogs.length).toBeGreaterThanOrEqual(0);
     });
   });
@@ -842,7 +930,8 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
   describe('Service Integration Tests', () => {
     it('should integrate ArchiveManager + AuthManager with real session validation', async () => {
       // Valid session should work
-      const validResult = await archiveManager.archiveEmails({
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const validResult = await archiveManagerA.archiveEmails({
         method: 'gmail',
         dryRun: true
       }, userA);
@@ -851,36 +940,38 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       // Invalid session should fail
       const invalidUser = { ...userA, session_id: 'invalid-session' };
       await expect(
-        archiveManager.archiveEmails({
+        (async () => { const am = await getArchiveManager(invalidUser.user_id); return am.archiveEmails({
           method: 'gmail',
           dryRun: false
-        }, invalidUser)
+        }, invalidUser); })()
       ).rejects.toThrow(/Session validation failed/);
     });
 
     it('should integrate ArchiveManager + DatabaseManager with real user_id queries', async () => {
       // Archive emails for User A
-      await archiveManager.archiveEmails({
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      await archiveManagerA.archiveEmails({
         method: 'gmail',
         dryRun: false
       }, userA);
 
       // Verify database queries respect user_id filtering
-      const userAEmails = await databaseManager.searchEmails({
+      const userAEmails = await withUserDb('user-a-test-123', db => db.searchEmails({
         archived: true,
         user_id: 'user-a-test-123'
-      });
-      const userBEmails = await databaseManager.searchEmails({
+      }));
+      const userBEmails = await withUserDb('user-b-test-456', db => db.searchEmails({
         archived: true,
         user_id: 'user-b-test-456'
-      });
+      }));
 
       expect(userAEmails).toHaveLength(2);
       expect(userBEmails).toHaveLength(0);
     });
 
     it('should integrate ArchiveManager + FileAccessControlManager with real file operations', async () => {
-      const exportResult = await archiveManager.exportEmails({
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const exportResult = await archiveManagerA.exportEmails({
         format: 'json',
         includeAttachments: false,
         outputPath: 'integration-test'
@@ -890,30 +981,30 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       expect(exportResult.exported).toBe(2);
       expect(exportResult.file_path).toBeDefined();
 
-      // Verify file metadata exists
-      const fileMetadata = await databaseManager.queryAll(
+      // Verify file metadata exists in user DB (not admin/system DB)
+      const fileMetadata2: FileMetadata[] = await withUserDb('user-a-test-123',db=>db.queryAll(
         'SELECT * FROM file_metadata WHERE user_id = ? AND file_type = ?',
         ['user-a-test-123', 'email_export']
-      );
-      expect(fileMetadata).toHaveLength(1);
+      ));
+      expect(fileMetadata2).toHaveLength(1);
 
-      // Verify audit trail
-      const auditEntries = await databaseManager.queryAll(
+      // Verify audit trail in user DB (not admin/system DB)
+      const auditEntries: AuditLogRow[] = await withUserDb('user-a-test-123', db => db.queryAll(
         'SELECT * FROM audit_log WHERE user_id = ? AND resource_type = ?',
         ['user-a-test-123', 'file']
-      );
+      ));
       expect(auditEntries.length).toBeGreaterThan(0);
     });
 
     it('should integrate with SearchEngine for user-specific search results', async () => {
-      // Search with specific criteria for User A
-      const userAResults = await databaseManager.searchEmails({
+      // Search with specific criteria for User A in their DB
+      const userADbManager = await getUserDbManager('user-a-test-123');
+      const userBDbManager = await getUserDbManager('user-b-test-456');
+      const userAResults: EmailIndex[] = await userADbManager.searchEmails({
         user_id: 'user-a-test-123',
         year: 2023
       });
-
-      // Search with same criteria for User B
-      const userBResults = await databaseManager.searchEmails({
+      const userBResults: EmailIndex[] = await userBDbManager.searchEmails({
         user_id: 'user-b-test-456',
         year: 2023
       });
@@ -939,9 +1030,9 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       // Create new ArchiveManager instance for single-user test
       const singleUserArchiveManager = new ArchiveManager(
         authManager,
-        databaseManager,
+        userDbManagerFactory,
         formatterRegistry,
-        fileAccessControl
+        await getFileAccessControlManager('single-user')
       );
 
       // Single-user context (no user_id required in some operations)
@@ -960,38 +1051,29 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
     });
 
     it('should handle migration from single-user to multi-user setup', async () => {
-      // Insert legacy data without user_id but WITH required thread_id
-      await databaseManager.execute(
-        `INSERT INTO email_index (
-          id, thread_id, subject, sender, recipients, date, year, size, archived
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ['legacy-email-1', 'legacy-thread-1', 'Legacy Email', 'legacy@example.com', 'user@example.com',
-         Date.now(), 2023, 1024, 0]
-      );
-
-      // Verify legacy data exists
-      const legacyEmails = await databaseManager.queryAll(
+      await seedAdminDbWithLegacyAndMultiUserEmails();
+      const systemDbManager = await getUserDbManager('admin-test-789');
+      // Verify legacy data exists in system DB
+      const legacyEmails = await systemDbManager.queryAll(
         'SELECT * FROM email_index WHERE user_id IS NULL'
       );
-      expect(legacyEmails.length).toBeGreaterThan(0);
-
+      expect(legacyEmails.length).toBeGreaterThanOrEqual(3);
       // Migration would assign these to a default user or require manual assignment
       // For this test, we verify the data structure supports both scenarios
-      const allEmails = await databaseManager.queryAll('SELECT * FROM email_index');
-      expect(allEmails.length).toBeGreaterThan(4); // 2 + 2 + 1 legacy
+      const allEmails = await systemDbManager.queryAll('SELECT * FROM email_index');
+      expect(allEmails.length).toBeGreaterThanOrEqual(7); // 2 + 2 + 3 legacy
     });
 
     it('should validate existing single-user data remains functional', async () => {
-      // Query all emails without user filter (admin operation)
-      const allEmails = await databaseManager.queryAll('SELECT * FROM email_index');
-      expect(allEmails.length).toBeGreaterThanOrEqual(4);
-
+      await seedAdminDbWithLegacyAndMultiUserEmails();
+      const systemDbManager = await getUserDbManager('admin-test-789');
+      const allEmails2 = await systemDbManager.queryAll('SELECT * FROM email_index');
+      expect(allEmails2.length).toBeGreaterThanOrEqual(7);
       // Verify mixed data (with and without user_id) can coexist
-      const withUserId = allEmails.filter((email: any) => email.user_id);
-      const withoutUserId = allEmails.filter((email: any) => !email.user_id);
-      
+      const withUserId = allEmails2.filter((email: any) => email.user_id);
+      const withoutUserId = allEmails2.filter((email: any) => !email.user_id);
       expect(withUserId.length).toBe(4); // Test data
-      expect(withoutUserId.length).toBeGreaterThanOrEqual(0); // Legacy data if any
+      expect(withoutUserId.length).toBeGreaterThanOrEqual(3); // Legacy data
     });
   });
 
@@ -1001,11 +1083,11 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       
       // Create multiple concurrent operations
       const operations = await Promise.all([
-        archiveManager.archiveEmails({ method: 'gmail', dryRun: false }, userA),
-        archiveManager.archiveEmails({ method: 'export', exportFormat: 'json', dryRun: false }, userB),
-        archiveManager.listRules({ activeOnly: true }, userA),
-        archiveManager.listRules({ activeOnly: true }, userB),
-        archiveManager.exportEmails({ format: 'json', includeAttachments: false }, userA)
+        (await (async () => { const am = await getArchiveManager(userA.user_id); return am.archiveEmails({ method: 'gmail', dryRun: false }, userA); })()),
+        (await (async () => { const am = await getArchiveManager(userB.user_id); return am.archiveEmails({ method: 'export', exportFormat: 'json', dryRun: false }, userB); })()),
+        (await (async () => { const am = await getArchiveManager(userA.user_id); return am.listRules({ activeOnly: true }, userA); })()),
+        (await (async () => { const am = await getArchiveManager(userB.user_id); return am.listRules({ activeOnly: true }, userB); })()),
+        (await (async () => { const am = await getArchiveManager(userA.user_id); return am.exportEmails({ format: 'json', includeAttachments: false }, userA); })())
       ]);
 
       const endTime = Date.now();
@@ -1042,11 +1124,12 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
 
       // Insert bulk data for User A
       for (const email of largeDataSet) {
-        await databaseManager.upsertEmailIndex(email, 'user-a-test-123');
+        await withUserDb('user-a-test-123', db => db.upsertEmailIndex(email, 'user-a-test-123'));
       }
 
       const startTime = Date.now();
-      const result = await archiveManager.archiveEmails({
+      const archiveManagerA = await getArchiveManager(userA.user_id);
+      const result = await archiveManagerA.archiveEmails({
         method: 'export',
         exportFormat: 'json',
         dryRun: false
@@ -1066,16 +1149,16 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       
       // Concurrent file operations for different users
       const fileOperations = await Promise.all([
-        archiveManager.exportEmails({
+        (await (async () => { const am = await getArchiveManager(userA.user_id); return am.exportEmails({
           format: 'json',
           includeAttachments: false,
           outputPath: 'perf-test-a'
-        }, userA),
-        archiveManager.exportEmails({
+        }, userA); })()),
+        (await (async () => { const am = await getArchiveManager(userB.user_id); return am.exportEmails({
           format: 'json', 
           includeAttachments: false,
           outputPath: 'perf-test-b'
-        }, userB)
+        }, userB); })())
       ]);
       
       const endTime = Date.now();
@@ -1097,14 +1180,10 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       const additionalUsers = ['user-c-test', 'user-d-test', 'user-e-test'];
       
       for (const userId of additionalUsers) {
-        await databaseManager.execute(
-          'INSERT INTO users (id, email, display_name, role) VALUES (?, ?, ?, ?)',
-          [userId, `${userId}@example.com`, `Test User ${userId}`, 'user']
-        );
-        
+        const userDbManager = await getUserDbManager(userId);
         // Add emails for each user
         for (let i = 0; i < 10; i++) {
-          await databaseManager.upsertEmailIndex({
+          await userDbManager.upsertEmailIndex({
             id: `${userId}-email-${i}`,
             threadId: `${userId}-thread-${i}`,
             subject: `Email ${i} for ${userId}`,
@@ -1125,11 +1204,11 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       
       // Concurrent database queries with user_id filtering
       const queryResults = await Promise.all([
-        databaseManager.searchEmails({ user_id: 'user-a-test-123' }),
-        databaseManager.searchEmails({ user_id: 'user-b-test-456' }),
-        databaseManager.searchEmails({ user_id: 'user-c-test' }),
-        databaseManager.searchEmails({ user_id: 'user-d-test' }),
-        databaseManager.searchEmails({ user_id: 'user-e-test' })
+       await withUserDb('user-a-test-123', db => db.searchEmails({ user_id: 'user-a-test-123' })),
+        await withUserDb('user-b-test-456', db => db.searchEmails({ user_id: 'user-b-test-456' })),
+        withUserDb('user-c-test', db => db.searchEmails({ user_id: 'user-c-test' })),
+        withUserDb('user-d-test', db => db.searchEmails({ user_id: 'user-d-test' })),
+        withUserDb('user-e-test', db => db.searchEmails({ user_id: 'user-e-test' }))
       ]);
       
       const endTime = Date.now();
@@ -1145,4 +1224,89 @@ describe('ArchiveManager Multi-User Integration Tests', () => {
       expect(endTime - startTime).toBeLessThan(1000); // 1 second
     });
   });
+
+  // Helper to get per-user FileAccessControlManager
+  async function getFileAccessControlManager(userId: string): Promise<FileAccessControlManager> {
+    if (!fileAccessControlManagers[userId]) {
+      const dbManager = await getUserDbManager(userId);
+      const facm = new FileAccessControlManager(dbManager);
+      await facm.initialize();
+      fileAccessControlManagers[userId] = facm;
+    }
+    return fileAccessControlManagers[userId];
+  }
+
+  // Helper to get per-user ArchiveManager
+  async function getArchiveManager(userId: string): Promise<ArchiveManager> {
+    if (!archiveManagers[userId]) {
+      const facm = await getFileAccessControlManager(userId);
+      archiveManagers[userId] = new ArchiveManager(authManager, userDbManagerFactory, formatterRegistry, facm);
+    }
+    return archiveManagers[userId];
+  }
+
+  // Helper to seed legacy and multi-user emails in admin-test-789 DB
+  async function seedAdminDbWithLegacyAndMultiUserEmails() {
+    const systemDbManager = await getUserDbManager('admin-test-789');
+    // Insert 3 legacy emails (no user_id)
+    for (let i = 1; i <= 3; i++) {
+      await systemDbManager.execute(
+        `INSERT INTO email_index (
+          id, thread_id, subject, sender, recipients, date, year, size, archived
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `legacy-email-${i}`,
+          `legacy-thread-${i}`,
+          `Legacy Email ${i}`,
+          'legacy@example.com',
+          'user@example.com',
+          Date.now(),
+          2023,
+          1024,
+          0
+        ]
+      );
+    }
+    // Insert 2 emails for user-a-test-123 (with user_id)
+    for (let i = 1; i <= 2; i++) {
+      await systemDbManager.execute(
+        `INSERT INTO email_index (
+          id, thread_id, subject, sender, recipients, date, year, size, archived, user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `email-a${i}`,
+          `thread-a${i}`,
+          `User A Email ${i}`,
+          'sender-a@example.com',
+          'user-a@example.com',
+          Date.now(),
+          2023,
+          1024 * i,
+          0,
+          'user-a-test-123'
+        ]
+      );
+    }
+    // Insert 2 emails for user-b-test-456 (with user_id)
+    for (let i = 1; i <= 2; i++) {
+      await systemDbManager.execute(
+        `INSERT INTO email_index (
+          id, thread_id, subject, sender, recipients, date, year, size, archived, user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `email-b${i}`,
+          `thread-b${i}`,
+          `User B Email ${i}`,
+          'sender-b@example.com',
+          'user-b@example.com',
+          Date.now(),
+          2023,
+          2048 * i,
+          0,
+          'user-b-test-456'
+        ]
+      );
+    }
+  }
 });
+

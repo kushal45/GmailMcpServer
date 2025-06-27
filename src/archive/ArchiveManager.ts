@@ -1,5 +1,6 @@
 import { AuthManager } from "../auth/AuthManager.js";
 import { DatabaseManager } from "../database/DatabaseManager.js";
+import { UserDatabaseManagerFactory } from "../database/UserDatabaseManagerFactory.js";
 import { UserSession } from "../auth/UserSession.js";
 import { FileAccessControlManager } from "../services/FileAccessControlManager.js";
 import {
@@ -37,25 +38,25 @@ const __dirname = path.dirname(__filename);
 
 export class ArchiveManager {
   private authManager: AuthManager;
-  private databaseManager: DatabaseManager;
+  private userDbManagerFactory: UserDatabaseManagerFactory;
   private formatterRegistry: FileFormatterRegistry;
   private fileAccessControl: FileAccessControlManager;
   private archivePath: string;
 
   constructor(
     authManager: AuthManager,
-    databaseManager: DatabaseManager,
+    userDbManagerFactory: UserDatabaseManagerFactory,
     formatterRegistry: FileFormatterRegistry,
     fileAccessControl: FileAccessControlManager
   ) {
     this.authManager = authManager;
-    this.databaseManager = databaseManager;
+    this.userDbManagerFactory = userDbManagerFactory;
     this.formatterRegistry = formatterRegistry;
     this.fileAccessControl = fileAccessControl;
     // Handle both absolute and relative paths for ARCHIVE_PATH
     // @ts-ignore
     const archivePath = process.env.ARCHIVE_PATH || "archives";
-    
+
     if (path.isAbsolute(archivePath)) {
       // Use absolute path directly (e.g., for tests)
       this.archivePath = archivePath;
@@ -63,6 +64,17 @@ export class ArchiveManager {
       // Use relative path from project root (e.g., for production)
       this.archivePath = path.join(__dirname, `../../${archivePath}`);
     }
+  }
+
+  /**
+   * Get user-specific database manager
+   * @param userId User ID to get database manager for
+   */
+  private async getUserDatabaseManager(userId: string): Promise<DatabaseManager> {
+    if (!userId) {
+      throw new Error('User ID is required for database operations');
+    }
+    return this.userDbManagerFactory.getUserDatabaseManager(userId);
   }
 
   async archiveEmails(
@@ -78,6 +90,9 @@ export class ArchiveManager {
     try {
       // Validate user session
       await this.validateUserSession(userContext);
+
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
 
       // Get emails to archive based on criteria with user context
       const emails = await this.getEmailsToArchive(options, userContext);
@@ -120,7 +135,7 @@ export class ArchiveManager {
           email.archived = true;
           email.archiveDate = new Date();
           email.archiveLocation = location;
-          await this.databaseManager.upsertEmailIndex(email, userContext.user_id);
+          await databaseManager.upsertEmailIndex(email, userContext.user_id);
         }
       }
 
@@ -134,7 +149,7 @@ export class ArchiveManager {
             : 0;
             
         // Create archive record with user_id
-        const archiveRecord = await this.databaseManager.createArchiveRecord({
+        const archiveRecord = await databaseManager.createArchiveRecord({
           emailIds: emails.map((e) => e.id),
           archiveDate: new Date(),
           method: options.method,
@@ -145,7 +160,7 @@ export class ArchiveManager {
         });
 
         // Update archive_records table with user_id if not already set
-        await this.databaseManager.execute(
+        await databaseManager.execute(
           'UPDATE archive_records SET user_id = ? WHERE id = ?',
           [userContext.user_id, archiveRecord]
         );
@@ -181,6 +196,9 @@ export class ArchiveManager {
     options: ArchiveOptions,
     userContext: UserContext
   ): Promise<EmailIndex[]> {
+    // Get user-specific database manager
+    const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
     const criteria: any = {};
 
     if (options.searchCriteria) {
@@ -203,11 +221,11 @@ export class ArchiveManager {
 
     // Don't archive already archived emails
     criteria.archived = false;
-    
+
     // Add user context for multi-user isolation
     criteria.user_id = userContext.user_id;
 
-    return await this.databaseManager.searchEmails(criteria);
+    return await databaseManager.searchEmails(criteria);
   }
 
   private async archiveToGmail(
@@ -414,6 +432,9 @@ export class ArchiveManager {
     try {
       // Validate user session
       await this.validateUserSession(userContext);
+
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
       
       const errors: string[] = [];
       let emailsToRestore: EmailIndex[] = [];
@@ -446,7 +467,7 @@ export class ArchiveManager {
         console.log("User ID:", userContext.user_id);
 
         // Use provided email IDs with user context filtering
-        emailsToRestore = await this.databaseManager.getEmailsByIds(
+        emailsToRestore = await databaseManager.getEmailsByIds(
           options.emailIds
         );
 
@@ -553,7 +574,7 @@ export class ArchiveManager {
             }
           }
 
-          await this.databaseManager.upsertEmailIndex(email, userContext.user_id);
+          await databaseManager.upsertEmailIndex(email, userContext.user_id);
         }
 
         // Log restore operation
@@ -679,9 +700,8 @@ export class ArchiveManager {
       }
 
       // Get the formatter for the file format
-      let formatter;
       try {
-        formatter = this.formatterRegistry.getFormatter(format);
+        this.formatterRegistry.getFormatter(format);
       } catch (error) {
         if (error instanceof UnsupportedFormatError) {
           return {
@@ -768,7 +788,10 @@ export class ArchiveManager {
       // Validate user session
       await this.validateUserSession(userContext);
 
-      const ruleId = await this.databaseManager.createArchiveRule({
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
+      const ruleId = await databaseManager.createArchiveRule({
         name: rule.name,
         criteria: rule.criteria,
         action: rule.action,
@@ -778,7 +801,7 @@ export class ArchiveManager {
       });
 
       // Update archive_rules table with user_id
-      await this.databaseManager.execute(
+      await databaseManager.execute(
         'UPDATE archive_rules SET user_id = ? WHERE id = ?',
         [userContext.user_id, ruleId]
       );
@@ -819,8 +842,11 @@ export class ArchiveManager {
       // Validate user session
       await this.validateUserSession(userContext);
 
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
       // Get user-specific rules with proper user filtering in DatabaseManager
-      const userRules = await this.databaseManager.getArchiveRules(options.activeOnly, userContext.user_id);
+      const userRules = await databaseManager.getArchiveRules(options.activeOnly, userContext.user_id);
       
       return { rules: userRules };
     } catch (error) {
@@ -842,13 +868,16 @@ export class ArchiveManager {
     // Validate user session
     await this.validateUserSession(userContext);
 
+    // Get user-specific database manager
+    const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+
     // Search emails with user context
     const searchCriteria = {
       ...(options.searchCriteria || {}),
       user_id: userContext.user_id
     };
-    
-    const emails = await this.databaseManager.searchEmails(searchCriteria);
+
+    const emails = await databaseManager.searchEmails(searchCriteria);
 
     const archiveOptions: ArchiveOptions = {
       method: "export",
@@ -887,7 +916,17 @@ export class ArchiveManager {
       system_run: !userContext
     });
 
-    const rules = await this.databaseManager.getArchiveRules(true, userContext?.user_id);
+    // For system runs, we need to handle multiple users differently
+    if (!userContext) {
+      // System-wide scheduled rules - this would need special handling
+      // For now, we'll skip system-wide rules to maintain user isolation
+      logger.warn("System-wide scheduled rules not supported in multi-user mode");
+      return;
+    }
+
+    // Get user-specific database manager
+    const databaseManager = await this.getUserDatabaseManager(userContext.user_id);
+    const rules = await databaseManager.getArchiveRules(true, userContext.user_id);
 
     for (const rule of rules) {
       // Filter rules by user if userContext is provided

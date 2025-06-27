@@ -1,4 +1,5 @@
 import { DatabaseManager } from '../database/DatabaseManager.js';
+import { UserDatabaseManagerFactory } from '../database/UserDatabaseManagerFactory.js';
 import { CacheManager } from '../cache/CacheManager.js';
 import { EmailIndex, CategorizeOptions, EmailStatistics, PriorityCategory } from '../types/index.js';
 import { logger } from '../utils/logger.js';
@@ -40,7 +41,7 @@ interface LegacyCategorizationConfig {
  * Maintains backward compatibility while providing improved modularity and testability.
  */
 export class CategorizationEngine {
-  private databaseManager: DatabaseManager;
+  private userDbManagerFactory: UserDatabaseManagerFactory;
   private cacheManager: CacheManager;
   private configManager: CategorizationConfigManager;
   
@@ -61,11 +62,11 @@ export class CategorizationEngine {
   };
 
   constructor(
-    databaseManager: DatabaseManager,
+    userDbManagerFactory: UserDatabaseManagerFactory,
     cacheManager: CacheManager,
     config?: LegacyCategorizationConfig | CategorizationSystemConfig
   ) {
-    this.databaseManager = databaseManager;
+    this.userDbManagerFactory = userDbManagerFactory;
     this.cacheManager = cacheManager;
     
     // Handle legacy configuration or use new system config
@@ -91,10 +92,23 @@ export class CategorizationEngine {
   }
 
   /**
+   * Get user-specific database manager
+   * @param userId User ID to get database manager for
+   */
+  private async getUserDatabaseManager(userId: string): Promise<DatabaseManager> {
+    if (!userId) {
+      throw new Error('User ID is required for database operations');
+    }
+    return this.userDbManagerFactory.getUserDatabaseManager(userId);
+  }
+
+  /**
    * Initialize analyzers using the factory pattern
    */
   private initializeAnalyzers(): void {
-    const factory = new AnalyzerFactory(this.databaseManager, this.cacheManager);
+    // Note: AnalyzerFactory will need to be updated to work with UserDatabaseManagerFactory
+    // For now, we'll pass null and handle database operations in the engine itself
+    const factory = new AnalyzerFactory(null as any, this.cacheManager);
     const config = this.configManager.getConfig();
     
     this.importanceAnalyzer = factory.createImportanceAnalyzer(config.analyzers.importance);

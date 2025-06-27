@@ -186,4 +186,12 @@ export class DatabaseRegistry {
     
     logger.info("DatabaseRegistry cleaned up");
   }
+
+  /**
+   * Reset the singleton instance (for test isolation)
+   */
+  static resetInstance(): void {
+    this.instance = null;
+    logger.info('DatabaseRegistry: Resetting singleton instance for test isolation');
+  }
 }

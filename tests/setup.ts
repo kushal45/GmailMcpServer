@@ -9,8 +9,9 @@ const originalConsoleError = console.error;
 const originalConsoleWarn = console.warn;
 
 beforeAll(() => {
-  // Only show console output if SHOW_LOGS env var is set
-  if (!process.env.SHOW_LOGS) {
+  // Only suppress console output if in test/CI and SHOW_LOGS is not set
+  const isTestEnv = process.env.NODE_ENV === 'test' || process.env.CI === 'true';
+  if (isTestEnv && !process.env.SHOW_LOGS) {
     console.log = jest.fn();
     console.error = jest.fn();
     console.warn = jest.fn();
