@@ -9,10 +9,6 @@ import {
 import { EmailFetcher } from "../../../src/email/EmailFetcher.js";
 import { EmailIndex, PriorityCategory } from "../../../src/types/index.js";
 
- import { createMockDatabase } from '../../utils/testHelpers';
-
-// Mock dependencies
-
 describe("EmailFetcher", () => {
   let emailFetcher: EmailFetcher;
   let mockDbManager: any;
@@ -23,9 +19,16 @@ describe("EmailFetcher", () => {
   beforeEach(() => {
     // Use helper to create properly typed mock database manager
    
-    mockDbManager = createMockDatabase() as any;
+    mockDbManager = {};
+    // Ensure all DB methods used in EmailFetcher are mocked
+    mockDbManager.searchEmails = jest.fn();
+    mockDbManager.getEmailCount = jest.fn();
+    mockDbManager.upsertEmailIndex = jest.fn();
+
     const mockUserDbManagerFactory = {
-      getUserDatabaseManager: jest.fn().mockImplementation(()=>Promise.resolve())
+      getUserDatabaseManager: jest.fn().mockImplementation(() => {
+         return Promise.resolve(mockDbManager);
+      })
     };
     mockAuthManager = {
       getGmailClient: jest.fn(),
