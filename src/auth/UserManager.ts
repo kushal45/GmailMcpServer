@@ -119,20 +119,19 @@ export class UserManager {
    * Create a new user
    * @param email User's email address
    * @param displayName Optional display name
+   * @param userId Optional userId (for testability)
    */
-  async createUser(email: string, displayName?: string): Promise<UserProfile> {
+  async createUser(email: string, displayName?: string, userId?: string): Promise<UserProfile> {
     // Check if user already exists
     const existingUser = this.getUserByEmail(email);
     if (existingUser) {
       return existingUser;
     }
-    
-    // Create new user profile
-    const userId = crypto.randomUUID();
+    // Use provided userId for tests, or generate a new one
+    const newUserId = userId || crypto.randomUUID();
     const now = new Date();
-    
     const newUser: UserProfile = {
-      userId,
+      userId: newUserId,
       email,
       displayName: displayName || email.split('@')[0],
       created: now,
@@ -140,12 +139,10 @@ export class UserManager {
       preferences: {},
       isActive: true
     };
-    
     // Store user in memory and on disk
-    this.users.set(userId, newUser);
+    this.users.set(newUserId, newUser);
     await this.saveUserProfile(newUser);
-    
-    logger.info(`Created new user: ${email} (${userId})`);
+    logger.info(`Created new user: ${email} (${newUserId})`);
     return newUser;
   }
 

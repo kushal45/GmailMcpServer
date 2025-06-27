@@ -1,8 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { SearchEngine } from '../../../src/search/SearchEngine';
-import { DatabaseManager } from '../../../src/database/DatabaseManager';
-import { EmailFetcher } from '../../../src/email/EmailFetcher';
-import { TestUserValidator } from '../../../src/auth/UserValidator';
+
 import {
   mockSearchCriteria,
   mockEmailIndex,
@@ -13,18 +11,12 @@ import { createMockDatabase } from '../../utils/testHelpers';
 describe('SearchEngine', () => {
   let searchEngine: SearchEngine;
   let mockDatabaseManager: any;
-  let mockEmailFetcher: any;
   let mockUserDatabaseInitializer: any;
-  let mockUserValidator: TestUserValidator;
   let mockUserContext: { user_id: string; session_id: string };
 
   beforeEach(() => {
     mockDatabaseManager = createMockDatabase();
-    mockEmailFetcher = {
-      listEmails: jest.fn(),
-      getEmailDetailsBulk: jest.fn(),
-      getAllMessageIds: jest.fn()
-    };
+
     
     // Mock UserDatabaseInitializer to return our mock database
     const mockGetUserDatabaseManager = jest.fn() as jest.MockedFunction<any>;
@@ -34,8 +26,151 @@ describe('SearchEngine', () => {
       getUserDatabaseManager: mockGetUserDatabaseManager
     };
     
-    // Use TestUserValidator that allows any user by default
-    mockUserValidator = new TestUserValidator([]);
+    // Create comprehensive mock UserManager instance
+    const mockUserManager = {
+      // Core user management methods
+      initialize: jest.fn(),
+      getAllUsers: jest.fn().mockReturnValue([]),
+      getUserById: jest.fn(),
+      getUserByEmail: jest.fn(),
+      createUser: jest.fn(),
+      updateUser: jest.fn(),
+      deactivateUser: jest.fn(),
+
+      // Session management methods
+      createSession: jest.fn(),
+      getSession: jest.fn(),
+      getUserSessions: jest.fn(),
+      invalidateSession: jest.fn(),
+      invalidateAllUserSessions: jest.fn(),
+      cleanupExpiredSessions: jest.fn(),
+
+      // OAuth and authentication methods
+      getOAuthClientForSession: jest.fn()
+    } as any;
+
+    // Configure basic mock return values
+    mockUserManager.initialize.mockResolvedValue(undefined);
+
+    // Configure mock implementations
+    mockUserManager.getUserById.mockImplementation((userId: string) => {
+      // Return a valid active user for test user IDs
+      if (userId === 'test-user-123' || userId === 'valid-user') {
+        return {
+          userId,
+          email: `${userId}@example.com`,
+          displayName: `Test User ${userId}`,
+          role: 'user',
+          created: new Date(),
+          preferences: {},
+          isActive: true
+        };
+      }
+      return undefined; // User not found
+    });
+
+    mockUserManager.getUserByEmail.mockImplementation((email: string) => {
+      if (email.includes('test-user') || email.includes('valid-user')) {
+        return {
+          userId: email.split('@')[0],
+          email,
+          displayName: `Test User`,
+          role: 'user',
+          created: new Date(),
+          preferences: {},
+          isActive: true
+        };
+      }
+      return undefined;
+    });
+
+    mockUserManager.createUser.mockImplementation(async (email: string, displayName?: string, userId?: string) => {
+      const user = {
+        userId: userId || email.split('@')[0],
+        email,
+        displayName: displayName || 'Test User',
+        role: 'user',
+        created: new Date(),
+        preferences: {},
+        isActive: true
+      };
+      return Promise.resolve(user);
+    });
+
+    mockUserManager.updateUser.mockImplementation(async (userId: string, updates: any) => {
+      const existingUser = mockUserManager.getUserById(userId);
+      if (!existingUser) {
+        throw new Error(`User not found: ${userId}`);
+      }
+      const updatedUser = { ...existingUser, ...updates };
+      return Promise.resolve(updatedUser);
+    });
+
+    mockUserManager.deactivateUser.mockImplementation(async (userId: string) => {
+      const user = mockUserManager.getUserById(userId);
+      if (!user) {
+        throw new Error(`User not found: ${userId}`);
+      }
+      return Promise.resolve();
+    });
+
+    mockUserManager.createSession.mockImplementation((userId: string) => {
+      const user = mockUserManager.getUserById(userId);
+      if (!user) {
+        throw new Error(`User not found: ${userId}`);
+      }
+      return {
+        sessionId: `session-${userId}-${Date.now()}`,
+        userId,
+        isValid: () => true,
+        getSessionData: () => ({ userId, sessionId: `session-${userId}` }),
+        invalidate: jest.fn()
+      };
+    });
+
+    mockUserManager.getSession.mockImplementation((sessionId: string) => {
+      if (sessionId.includes('valid') || sessionId.includes('test')) {
+        return {
+          sessionId,
+          userId: 'test-user-123',
+          isValid: () => true,
+          getSessionData: () => ({ userId: 'test-user-123', sessionId }),
+          invalidate: jest.fn()
+        };
+      }
+      return undefined;
+    });
+
+    mockUserManager.getUserSessions.mockImplementation((userId: string) => {
+      return [{
+        sessionId: `session-${userId}`,
+        userId,
+        isValid: () => true,
+        getSessionData: () => ({ userId, sessionId: `session-${userId}` }),
+        invalidate: jest.fn()
+      }];
+    });
+
+    mockUserManager.invalidateSession.mockImplementation((_sessionId: string) => {
+      // Mock implementation - just log the action
+      return undefined;
+    });
+
+    mockUserManager.invalidateAllUserSessions.mockImplementation((_userId: string) => {
+      // Mock implementation - just log the action
+      return undefined;
+    });
+
+    mockUserManager.cleanupExpiredSessions.mockImplementation(() => {
+      // Mock implementation - return number of cleaned sessions
+      return 0;
+    });
+
+    mockUserManager.getOAuthClientForSession.mockResolvedValue({
+      setCredentials: jest.fn(),
+      getAccessToken: jest.fn(),
+      refreshAccessToken: jest.fn()
+    });
     
     // Mock user context for multi-user support
     mockUserContext = {
@@ -45,8 +180,7 @@ describe('SearchEngine', () => {
     
     searchEngine = new SearchEngine(
       mockUserDatabaseInitializer,
-      mockEmailFetcher,
-      mockUserValidator
+      mockUserManager
     );
   });
 

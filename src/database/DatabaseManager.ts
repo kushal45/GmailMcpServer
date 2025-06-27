@@ -148,6 +148,9 @@ export class DatabaseManager {
         });
       });
 
+      // Enable WAL mode for better concurrency
+      await this.run("PRAGMA journal_mode = WAL");
+
       // Enable foreign keys
       await this.run("PRAGMA foreign_keys = ON");
 
@@ -978,12 +981,6 @@ export class DatabaseManager {
     let sql = "SELECT *,COUNT(*) OVER () AS total_email_count FROM email_index WHERE 1=1";
     const params: any[] = [];
 
-    // Filter by user_id if provided in criteria or available in the instance
-    const userIdToUse = criteria.user_id || this.userId;
-    if (userIdToUse) {
-      sql += " AND user_id = ?";
-      params.push(userIdToUse);
-    }
 
     if (criteria?.category === null) {
       sql += " AND category IS NULL";

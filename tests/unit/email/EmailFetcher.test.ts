@@ -23,7 +23,10 @@ describe("EmailFetcher", () => {
   beforeEach(() => {
     // Use helper to create properly typed mock database manager
    
-    mockDbManager = createMockDatabase();
+    mockDbManager = createMockDatabase() as any;
+    const mockUserDbManagerFactory = {
+      getUserDatabaseManager: jest.fn().mockImplementation(()=>Promise.resolve())
+    };
     mockAuthManager = {
       getGmailClient: jest.fn(),
       getSessionId: jest.fn().mockReturnValue('test-session-123'),
@@ -48,7 +51,7 @@ describe("EmailFetcher", () => {
 
     // Create EmailFetcher instance with mocks
     emailFetcher = new EmailFetcher(
-      mockDbManager,
+      mockUserDbManagerFactory as any,
       mockAuthManager,
       mockCacheManager
     );
@@ -71,12 +74,11 @@ describe("EmailFetcher", () => {
         total: 2,
         timestamp: Date.now(), // Fresh timestamp
       });
-
       // Call listEmails
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toEqual(cachedEmails);
@@ -102,7 +104,7 @@ describe("EmailFetcher", () => {
         category: PriorityCategory.HIGH,
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toEqual(dbEmails);
@@ -159,7 +161,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toHaveLength(1);
@@ -186,7 +188,7 @@ describe("EmailFetcher", () => {
           timestamp: expect.any(Number),
           total: expect.any(Number),
         }),
-        undefined
+        'test-user-123'
       );
     });
 
@@ -198,7 +200,7 @@ describe("EmailFetcher", () => {
         emailFetcher.listEmails({
           limit: 10,
           offset: 0,
-        })
+        }, 'test-user-123')
       ).rejects.toThrow("Database error");
     });
 
@@ -217,7 +219,7 @@ describe("EmailFetcher", () => {
         emailFetcher.listEmails({
           limit: 10,
           offset: 0,
-        })
+        }, 'test-user-123')
       ).rejects.toThrow("API error");
     });
 
@@ -235,7 +237,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results are empty but valid
       expect(result.emails).toEqual([]);
@@ -288,7 +290,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toHaveLength(1);
@@ -317,7 +319,7 @@ describe("EmailFetcher", () => {
         query: "subject:test",
         limit: 20,
         offset: 10,
-      });
+      }, 'test-user-123');
 
       // Verify database was queried with all filters
       expect(mockDbManager.searchEmails).toHaveBeenCalledWith(
@@ -357,7 +359,7 @@ describe("EmailFetcher", () => {
         query: "important",
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify Gmail API was called despite having database results
       expect(mockGmailClient.users.messages.list).toHaveBeenCalled();
@@ -381,7 +383,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify fresh results from database were returned, not stale cache
       expect(result.emails).toEqual(dbEmails);

@@ -723,10 +723,7 @@ describe("DeleteManager Error Handling", () => {
       await seedTestData(userDbManager, batchTestEmails.slice(0, 10), defaultUserContext.user_id);
       setupBatchModifyFailure(mockGmailClient, testErrors.rateLimitError);
       const options = createDeleteOptions({ category: 'low' });
-      const result = await deleteManager.deleteEmails(options, defaultUserContext);
-      expect(result.deleted).toBe(0);
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]).toContain('Rate limit exceeded');
+      const result = await expect(deleteManager.deleteEmails(options, defaultUserContext)).rejects.toThrow('Rate limit exceeded');
     } finally {
       if (userDbManager) await cleanupTestDatabase(userDbManager, testDbDir);
     }

@@ -3,17 +3,15 @@ import { UserDatabaseInitializer } from '../database/UserDatabaseInitializer.js'
 import { EmailFetcher } from '../email/EmailFetcher.js';
 import { EmailIndex, SearchCriteria, SavedSearch, SearchEngineCriteria } from '../types/index.js';
 import { logger } from '../utils/logger.js';
-import { UserValidator, ProductionUserValidator } from '../auth/UserValidator.js';
+import { UserManager } from '../auth/UserManager.js';
 
 export class SearchEngine {
   private userDatabaseInitializer: UserDatabaseInitializer;
-  private emailFetcher: EmailFetcher;
-  private userValidator: UserValidator;
+  private userManager: UserManager;
 
-  constructor(userDatabaseInitializer: UserDatabaseInitializer, emailFetcher: EmailFetcher, userValidator?: UserValidator) {
+  constructor(userDatabaseInitializer: UserDatabaseInitializer, userManager: UserManager) {
     this.userDatabaseInitializer = userDatabaseInitializer;
-    this.emailFetcher = emailFetcher;
-    this.userValidator = userValidator || new ProductionUserValidator();
+    this.userManager = userManager;
   }
 
   async search(criteria: SearchEngineCriteria, userContext: { user_id: string; session_id: string }): Promise<{ emails: EmailIndex[], total: number }> {
@@ -77,8 +75,9 @@ export class SearchEngine {
 
   private async getUserDatabaseManager(userId: string): Promise<any> {
     try {
-      // Use injected UserValidator for user validation
-      const isValidUser = await this.userValidator.validateUser(userId);
+      // Use UserManager for user validation
+      const user = this.userManager.getUserById(userId);
+      const isValidUser = !!user && user.isActive;
       
       if (!isValidUser) {
         // For security, we don't auto-create databases for unknown users

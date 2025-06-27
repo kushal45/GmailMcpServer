@@ -155,36 +155,35 @@ export class CategorizationEngine {
    * Main method to categorize emails based on configured rules and analyzers
    */
   async categorizeEmails(options: CategorizeOptions, userContext?: { user_id: string; session_id: string }): Promise<EnhancedCategorizationResult> {
-    logger.info('Starting email categorization', { ...options, userId: userContext?.user_id });
-    
+    const userId = options.user_id || userContext?.user_id;
+    if (!userId) {
+      logger.error('categorizeEmails: user_id is required for per-user database operations');
+      throw new Error('user_id is required for categorization');
+    }
+    logger.info('Starting email categorization', { ...options, userId });
     try {
+      // Get the per-user database manager
+      const dbManager = await this.getUserDatabaseManager(userId);
       // Get all emails that need categorization with user context
-      const emails = await this.getEmailsForCategorization(options, userContext);
-      
+      const emails = await this.getEmailsForCategorization(options, userContext, dbManager);
       let processed = 0;
       const categories = { high: 0, medium: 0, low: 0 };
       const categorizedEmails: EmailIndex[] = [];
-      
       // Track analyzer insights data
       const allImportanceRules: string[] = [];
       const confidenceScores: number[] = [];
       const ageDistribution = { recent: 0, moderate: 0, old: 0 };
       const sizeDistribution = { small: 0, medium: 0, large: 0 };
       let spamDetectedCount = 0;
-      
       for (const email of emails) {
         const category = await this.determineCategory(email);
         email.category = category;
-        
-        // Update database
-        await this.databaseManager.upsertEmailIndex(email, userContext?.user_id);
-        
+        // Update database (per-user)
+        await dbManager.upsertEmailIndex(email, userId);
         // Collect the categorized email with all analyzer results
         categorizedEmails.push({ ...email });
-        
         categories[category]++;
         processed++;
-        
         // Collect analyzer insights data
         if (email.importanceMatchedRules) {
           allImportanceRules.push(...email.importanceMatchedRules);
@@ -203,23 +202,20 @@ export class CategorizationEngine {
         }
         try {
           if (this.importanceAnalyzer && typeof this.importanceAnalyzer.getApplicableRules === 'function') {
-            const applicableRules = this.importanceAnalyzer.getApplicableRules(this.createAnalysisContext(email, userContext?.user_id || 'default'));
+            const applicableRules = this.importanceAnalyzer.getApplicableRules(this.createAnalysisContext(email, userId));
             this.metrics.rulesEvaluated += applicableRules.length;
             logger.debug('[METRICS] Evaluated rules for email', { emailId: email.id, rulesEvaluated: applicableRules.length });
           }
         } catch (err) {
           logger.error('[METRICS] Error incrementing rulesEvaluated', { emailId: email.id, error: err instanceof Error ? err.message : err });
         }
-        
         // Log progress every 100 emails
         if (processed % 100 === 0) {
           logger.info(`Categorized ${processed} emails...`);
         }
       }
-      
       // Clear cache after categorization
       this.cacheManager.flush();
-      
       // Generate analyzer insights
       const analyzer_insights = this.generateAnalyzerInsights(
         allImportanceRules,
@@ -229,9 +225,7 @@ export class CategorizationEngine {
         spamDetectedCount,
         processed
       );
-      
       logger.info('Email categorization completed', { processed, categories });
-      
       return {
         processed,
         categories,
@@ -653,19 +647,26 @@ export class CategorizationEngine {
     };
   }
 
-  private async getEmailsForCategorization(options: CategorizeOptions, userContext?: { user_id: string; session_id: string }): Promise<EmailIndex[]> {
-    // Use user_id from options or from userContext
-    const userId = options.user_id || userContext?.user_id || this.databaseManager.getUserId();
-    
+  /**
+   * Get emails for categorization for a specific user
+   */
+  private async getEmailsForCategorization(options: CategorizeOptions, userContext?: { user_id: string; session_id: string }, dbManager?: DatabaseManager): Promise<EmailIndex[]> {
+    const userId = options.user_id || userContext?.user_id;
+    if (!userId) {
+      logger.error('getEmailsForCategorization: user_id is required for per-user database operations');
+      throw new Error('user_id is required for email retrieval');
+    }
+    // Use provided dbManager or fetch it
+    const manager = dbManager || await this.getUserDatabaseManager(userId);
     if (options.forceRefresh) {
       // Get all emails for this user
-      return await this.databaseManager.searchEmails({
+      return await manager.searchEmails({
         year: options.year,
         user_id: userId
       });
     } else {
       // Get only uncategorized emails (category IS NULL) for this user
-      return await this.databaseManager.searchEmails({
+      return await manager.searchEmails({
         year: options.year,
         category: null,
         user_id: userId
@@ -673,19 +674,24 @@ export class CategorizationEngine {
     }
   }
 
+  /**
+   * Get statistics for a specific user
+   */
   async getStatistics(options: { groupBy: string, includeArchived: boolean }, userContext?: { user_id: string; session_id: string }): Promise<EmailStatistics> {
-    // Use a user-specific cache key
-    const userId = userContext?.user_id || this.databaseManager.getUserId() || 'default';
+    const userId = userContext?.user_id;
+    if (!userId) {
+      logger.error('getStatistics: user_id is required for per-user database operations');
+      throw new Error('user_id is required for statistics');
+    }
     const cacheKey = CacheManager.categoryStatsKey(userId);
     const cached = this.cacheManager.get<EmailStatistics>(cacheKey);
-    
     if (cached) {
       return cached;
     }
-    
+    // Get per-user db manager
+    const dbManager = await this.getUserDatabaseManager(userId);
     // Pass userId to get user-specific statistics
-    const stats = await this.databaseManager.getEmailStatistics(options.includeArchived, userId);
-    
+    const stats = await dbManager.getEmailStatistics(options.includeArchived, userId);
     // Transform database stats to EmailStatistics format
     const result: EmailStatistics = {
       categories: {
@@ -710,7 +716,6 @@ export class CategorizationEngine {
         size: 0
       }
     };
-    
     // Process category stats
     for (const cat of stats.categories) {
       if (cat.category in result.categories) {
@@ -718,7 +723,6 @@ export class CategorizationEngine {
         result.categories.total += cat.count;
       }
     }
-    
     // Process year stats
     for (const year of stats.years) {
       result.years[year.year] = {
@@ -728,10 +732,8 @@ export class CategorizationEngine {
       result.total.count += year.count;
       result.total.size += year.total_size;
     }
-    
     // Cache the result
-    this.cacheManager.set(cacheKey, result,userId, 300); // Cache for 5 minutes
-    
+    this.cacheManager.set(cacheKey, result, userId, 300); // Cache for 5 minutes
     return result;
   }
 

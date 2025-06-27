@@ -1,7 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 import { EmailFetcher } from '../../../src/email/EmailFetcher.js';
-import { UserManager } from '../../../src/auth/UserManager.js';
-import { PriorityCategory, UserProfile } from '../../../src/types/index.js';
+import { PriorityCategory } from '../../../src/types/index.js';
 import { mockGmailMessages, mockListResponse } from './fixtures/mockGmailResponses.js';
 import { createMockDatabase, createMockCache, createMockGmailClient } from '../../utils/testHelpers';
 
@@ -12,36 +18,12 @@ describe('EmailFetcher Edge Cases', () => {
   const ADMIN_USER_ID = 'admin-user-edge-1';
   const REGULAR_USER_ID = 'regular-user-edge-1';
   const REGULAR_USER_2_ID = 'regular-user-edge-2';
+  const ADMIN_SESSION_ID = 'admin-session-edge-1';
+  const REGULAR_USER_SESSION_ID = 'regular-user-session-edge-1';
+  const REGULAR_USER_2_SESSION_ID = 'regular-user-2-session-edge-1';
   
-  const adminUser: UserProfile = {
-    userId: ADMIN_USER_ID,
-    email: 'admin@example.com',
-    displayName: 'Admin User',
-    role: 'admin',
-    created: new Date(),
-    preferences: {},
-    isActive: true
-  };
-  
-  const regularUser1: UserProfile = {
-    userId: REGULAR_USER_ID,
-    email: 'user1@example.com',
-    displayName: 'Regular User 1',
-    role: 'user',
-    created: new Date(),
-    preferences: {},
-    isActive: true
-  };
-  
-  const regularUser2: UserProfile = {
-    userId: REGULAR_USER_2_ID,
-    email: 'user2@example.com',
-    displayName: 'Regular User 2',
-    role: 'user',
-    created: new Date(),
-    preferences: {},
-    isActive: true
-  };
+  // User profile constants removed as they were unused in the tests
+  // Tests use user IDs directly for better clarity and reduced complexity
 
   describe('Single-User Edge Cases', () => {
     let emailFetcher: EmailFetcher;
@@ -49,9 +31,10 @@ describe('EmailFetcher Edge Cases', () => {
     let mockAuthManager: { getGmailClient: jest.Mock; getSessionId: jest.Mock };
     let mockCacheManager: any;
     let mockGmailClient: any;
+    let mockUserDbManagerFactory: any;
 
     beforeEach(() => {
-      mockDbManager = createMockDatabase();
+      mockDbManager = createMockDatabase() as any;
       mockCacheManager = createMockCache();
       mockGmailClient = createMockGmailClient();
       mockAuthManager = {
@@ -59,8 +42,13 @@ describe('EmailFetcher Edge Cases', () => {
         getSessionId: jest.fn().mockImplementation(() => Promise.resolve('mock-session-id'))
       };
 
+      mockUserDbManagerFactory = {
+        //@ts-ignore
+        getUserDatabaseManager: jest.fn().mockResolvedValue(mockDbManager)
+      };
+
       emailFetcher = new EmailFetcher(
-        mockDbManager,
+        mockUserDbManagerFactory as any,
         mockAuthManager as any,
         mockCacheManager
       );
@@ -92,7 +80,7 @@ describe('EmailFetcher Edge Cases', () => {
       await expect(emailFetcher.listEmails({
         limit: 10,
         offset: 0
-      })).rejects.toThrow('Network error');
+      }, REGULAR_USER_ID)).rejects.toThrow('Network error');
     });
     
     it('should handle malformed Gmail API list response', async () => {
@@ -110,7 +98,7 @@ describe('EmailFetcher Edge Cases', () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0
-      });
+      }, REGULAR_USER_ID);
       
       expect(result.emails).toEqual([]);
       expect(result.total).toBe(0);
@@ -134,7 +122,7 @@ describe('EmailFetcher Edge Cases', () => {
       await emailFetcher.listEmails({
         limit: 10,
         offset: 0
-      });
+      }, REGULAR_USER_ID);
       
       // Verify second message was still processed
       expect(mockDbManager.upsertEmailIndex).toHaveBeenCalledTimes(1);
@@ -159,7 +147,7 @@ describe('EmailFetcher Edge Cases', () => {
       await emailFetcher.listEmails({
         limit: 10,
         offset: 0
-      });
+      }, REGULAR_USER_ID);
       // Should NOT call upsertEmailIndex for malformed message
       expect(mockDbManager.upsertEmailIndex).not.toHaveBeenCalled();
     });
@@ -191,7 +179,7 @@ describe('EmailFetcher Edge Cases', () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0
-      });
+      }, REGULAR_USER_ID);
       expect(result.emails).toEqual([]);
       expect(result.total).toBe(0);
     });
@@ -312,140 +300,60 @@ describe('EmailFetcher Edge Cases', () => {
   });
 
   describe('Multi-User Edge Cases', () => {
-    let emailFetcher: EmailFetcher;
-    let mockDbManager: any;
+    let dbManagers: Record<string, any>;
+    let mockUserDbManagerFactory: any;
     let mockAuthManager: any;
     let mockCacheManager: any;
-    let userManager: UserManager;
-    let mockUserSessions: Map<string, any>;
-    let mockUsers: Map<string, UserProfile>;
+    let user1GmailClient: any;
+    let user2GmailClient: any;
+    let adminGmailClient: any;
+    let emailFetcher: EmailFetcher;
 
     beforeEach(() => {
-      mockDbManager = createMockDatabase();
-      mockCacheManager = createMockCache();
-
-      // Setup mock users and sessions
-      mockUsers = new Map([
-        [ADMIN_USER_ID, adminUser],
-        [REGULAR_USER_ID, regularUser1],
-        [REGULAR_USER_2_ID, regularUser2]
-      ]);
-      
-      mockUserSessions = new Map([
-        ['admin-edge-session-id', {
-          sessionId: 'admin-edge-session-id',
-          userId: ADMIN_USER_ID,
-          isValid: () => true,
-          getSessionData: () => ({ sessionId: 'admin-edge-session-id', userId: ADMIN_USER_ID })
-        }],
-        ['user1-edge-session-id', {
-          sessionId: 'user1-edge-session-id',
-          userId: REGULAR_USER_ID,
-          isValid: () => true,
-          getSessionData: () => ({ sessionId: 'user1-edge-session-id', userId: REGULAR_USER_ID })
-        }],
-        ['user2-edge-session-id', {
-          sessionId: 'user2-edge-session-id',
-          userId: REGULAR_USER_2_ID,
-          isValid: () => true,
-          getSessionData: () => ({ sessionId: 'user2-edge-session-id', userId: REGULAR_USER_2_ID })
-        }],
-        ['expired-edge-session-id', {
-          sessionId: 'expired-edge-session-id',
-          userId: REGULAR_USER_ID,
-          isValid: () => false,
-          getSessionData: () => ({ sessionId: 'expired-edge-session-id', userId: REGULAR_USER_ID })
-        }],
-        ['invalid-edge-session-id', {
-          sessionId: 'invalid-edge-session-id',
-          userId: 'non-existent-user',
-          isValid: () => false,
-          getSessionData: () => ({ sessionId: 'invalid-edge-session-id', userId: 'non-existent-user' })
-        }]
-      ]);
-      
-      // Mock UserManager
-      userManager = {
-        getUserById: jest.fn().mockImplementation((userId) => mockUsers.get(userId as string)),
-        getSession: jest.fn().mockImplementation((sessionId) => mockUserSessions.get(sessionId as string)),
-        createSession: jest.fn(),
-        invalidateSession: jest.fn()
-      } as unknown as UserManager;
-      
-      // Create multiple mock Gmail clients for different users
-      const adminGmailClient = createMockGmailClient();
-      const user1GmailClient = createMockGmailClient();
-      const user2GmailClient = createMockGmailClient();
-      
-      // Mock auth manager with session-based authentication
-      mockAuthManager = {
-        getSessionId: jest.fn().mockImplementation((userId) => {
-          const session = Array.from(mockUserSessions.values()).find(s => s.userId === userId);
-          return session ? Promise.resolve(session.sessionId) : Promise.resolve(null);
-        }),
-        getGmailClient: jest.fn().mockImplementation((sessionIdOrUserId) => {
-          if (!sessionIdOrUserId) {
-            return Promise.resolve(createMockGmailClient()); // Single-user fallback
-          }
-          
-          // Check if it's a direct userId
-          if (sessionIdOrUserId === ADMIN_USER_ID ||
-              sessionIdOrUserId === REGULAR_USER_ID ||
-              sessionIdOrUserId === REGULAR_USER_2_ID) {
-            switch (sessionIdOrUserId) {
-              case ADMIN_USER_ID:
-                return Promise.resolve(adminGmailClient);
-              case REGULAR_USER_ID:
-                return Promise.resolve(user1GmailClient);
-              case REGULAR_USER_2_ID:
-                return Promise.resolve(user2GmailClient);
-              default:
-                return Promise.reject(new Error('Unknown user'));
-            }
-          }
-          
-          // Otherwise it's a sessionId - look up the session
-          const session = mockUserSessions.get(sessionIdOrUserId as string);
-          if (!session || !session.isValid()) {
-            return Promise.reject(new Error('Invalid or expired session'));
-          }
-          
-          // Return user-specific Gmail client based on session
-          switch (session.userId) {
-            case ADMIN_USER_ID:
-              return Promise.resolve(adminGmailClient);
-            case REGULAR_USER_ID:
-              return Promise.resolve(user1GmailClient);
-            case REGULAR_USER_2_ID:
-              return Promise.resolve(user2GmailClient);
-            default:
-              return Promise.reject(new Error('Unknown user'));
-          }
-        }),
-        hasValidAuth: jest.fn().mockImplementation((sessionId) => {
-          if (!sessionId) return Promise.resolve(true); // Single-user fallback
-          
-          const session = mockUserSessions.get(sessionId as string);
-          return Promise.resolve(session && session.isValid());
-        }),
-        validateSession: jest.fn().mockImplementation((sessionId) => {
-          const session = mockUserSessions.get(sessionId as string);
-          return session && session.isValid();
+      dbManagers = {
+        [ADMIN_USER_ID]: createMockDatabase(),
+        [REGULAR_USER_ID]: createMockDatabase(),
+        [REGULAR_USER_2_ID]: createMockDatabase(),
+      };
+      // [FIX] Ensure all dbManagers return valid values for searchEmails, getEmailCount, upsertEmailIndex
+      Object.values(dbManagers).forEach(db => {
+        db.searchEmails.mockResolvedValue([]);
+        db.getEmailCount.mockResolvedValue(0);
+        db.upsertEmailIndex.mockResolvedValue(undefined);
+      });
+      mockUserDbManagerFactory = {
+        getUserDatabaseManager: jest.fn().mockImplementation((userId: any) => {
+          if (!dbManagers[userId]) throw new Error('User not found');
+          return Promise.resolve(dbManagers[userId]);
         })
       };
-
+      // [FIX] Create persistent Gmail client mocks for each user
+      user1GmailClient = createMockGmailClient();
+      user1GmailClient.metadata="kushal";
+      user2GmailClient = createMockGmailClient();
+      adminGmailClient = createMockGmailClient();
+      mockAuthManager = {
+        // [FIX] Always return the same Gmail client instance for each user
+        getGmailClient: jest.fn().mockImplementation((sessionId) => {
+          if (sessionId === REGULAR_USER_SESSION_ID) return Promise.resolve(user1GmailClient);
+          if (sessionId === REGULAR_USER_2_SESSION_ID) return Promise.resolve(user2GmailClient);
+          if (sessionId === ADMIN_SESSION_ID) return Promise.resolve(adminGmailClient);
+          return Promise.resolve(createMockGmailClient());
+        }),
+        getSessionId: jest.fn().mockImplementation((userId) => {
+          if (userId === REGULAR_USER_ID) return REGULAR_USER_SESSION_ID;
+          if (userId === REGULAR_USER_2_ID) return REGULAR_USER_2_SESSION_ID;
+          if (userId === ADMIN_USER_ID) return ADMIN_SESSION_ID;
+        }),
+        // [FIX] Add validateSession mock for session invalidation tests
+        validateSession: jest.fn()
+      };
+      mockCacheManager = createMockCache();
       emailFetcher = new EmailFetcher(
-        mockDbManager,
+        mockUserDbManagerFactory as any,
         mockAuthManager,
         mockCacheManager
       );
-
-      // Setup default database responses
-      mockDbManager.searchEmails.mockResolvedValue([]);
-      mockDbManager.getEmailCount.mockResolvedValue(0);
-      mockDbManager.upsertEmailIndex.mockResolvedValue(undefined);
-      mockCacheManager.get.mockReturnValue(null);
-      mockCacheManager.set.mockImplementation(() => {});
     });
 
     afterEach(() => {
@@ -459,9 +367,8 @@ describe('EmailFetcher Edge Cases', () => {
           .mockReturnValueOnce(null) // No cache for emails
           .mockReturnValueOnce(0);   // Old sync time
 
-        // Mock OAuth token expiration error
-        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_ID);
-        user1GmailClient.users.messages.list.mockRejectedValue(
+        user1GmailClient.users.messages.list.mockReset();
+        user1GmailClient.users.messages.list.mockRejectedValueOnce(
           new Error('Invalid Credentials: Token has been expired or revoked')
         );
 
@@ -472,7 +379,7 @@ describe('EmailFetcher Edge Cases', () => {
         }, REGULAR_USER_ID)).rejects.toThrow('Invalid Credentials: Token has been expired or revoked');
 
         // Verify the correct user's Gmail client was called
-        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_ID);
+        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_SESSION_ID);
       });
 
       it('should handle token refresh failure during operation', async () => {
@@ -498,13 +405,13 @@ describe('EmailFetcher Edge Cases', () => {
           .mockReturnValue(null); // No cache
         
         // User 1 has expired token
-        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_ID);
+        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_SESSION_ID);
         user1GmailClient.users.messages.list.mockRejectedValue(
           new Error('Token expired for user 1')
         );
 
         // User 2 has valid token
-        const user2GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_2_ID);
+        const user2GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_2_SESSION_ID);
         user2GmailClient.users.messages.list.mockResolvedValue(mockListResponse.empty);
 
         // User 1 should fail
@@ -531,12 +438,6 @@ describe('EmailFetcher Edge Cases', () => {
           .mockReturnValueOnce(null) // No cache for emails
           .mockReturnValueOnce(0);   // Old sync time
 
-        // Mock session becoming invalid during operation
-        const mockSession = mockUserSessions.get('user1-edge-session-id');
-        if (mockSession) {
-          mockSession.isValid = jest.fn().mockReturnValueOnce(true).mockReturnValue(false);
-        }
-
         // First call succeeds (session valid), then session becomes invalid
         mockAuthManager.validateSession.mockReturnValueOnce(true).mockReturnValue(false);
         mockAuthManager.getGmailClient.mockImplementationOnce(() =>
@@ -551,12 +452,12 @@ describe('EmailFetcher Edge Cases', () => {
 
       it('should handle concurrent session invalidation', async () => {
         // Mock both users having invalid sessions
-        mockAuthManager.getGmailClient.mockImplementation((sessionIdOrUserId) => {
+        mockAuthManager.getGmailClient.mockImplementation((sessionId: string) => {
           // Handle both direct userId and sessionId
-          if (sessionIdOrUserId === REGULAR_USER_ID || sessionIdOrUserId === 'user1-edge-session-id') {
+          if ( sessionId === REGULAR_USER_SESSION_ID) {
             return Promise.reject(new Error('Session invalid for user 1'));
           }
-          if (sessionIdOrUserId === REGULAR_USER_2_ID || sessionIdOrUserId === 'user2-edge-session-id') {
+          if (sessionId === REGULAR_USER_2_SESSION_ID) {
             return Promise.reject(new Error('Session invalid for user 2'));
           }
           return Promise.reject(new Error('Unknown session'));
@@ -608,7 +509,7 @@ describe('EmailFetcher Edge Cases', () => {
           .mockReturnValueOnce(0);   // Old sync time
 
         // Mock rate limit error for specific user
-        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_ID);
+        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_SESSION_ID);
         user1GmailClient.users.messages.list.mockRejectedValue(
           new Error('User rate limit exceeded')
         );
@@ -619,7 +520,7 @@ describe('EmailFetcher Edge Cases', () => {
         }, REGULAR_USER_ID)).rejects.toThrow('User rate limit exceeded');
 
         // Verify user context was passed
-        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_ID);
+        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_SESSION_ID);
       });
 
       it('should handle malformed Gmail API responses with user context', async () => {
@@ -665,7 +566,7 @@ describe('EmailFetcher Edge Cases', () => {
         });
 
         // Database throws user-specific error during upsert
-        mockDbManager.upsertEmailIndex.mockRejectedValue(
+        dbManagers[REGULAR_USER_ID].upsertEmailIndex.mockRejectedValue(
           new Error(`Database error for user ${REGULAR_USER_ID}`)
         );
 
@@ -683,8 +584,8 @@ describe('EmailFetcher Edge Cases', () => {
     describe('Multi-User Cross-User Data Isolation During Errors', () => {
       it('should prevent cross-user data contamination during errors', async () => {
         // Setup different responses for different users
-        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_ID);
-        const user2GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_2_ID);
+        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_SESSION_ID);
+        const user2GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_2_SESSION_ID);
 
         // Force sync for both users
         mockCacheManager.get = jest.fn().mockReturnValue(null);
@@ -713,8 +614,8 @@ describe('EmailFetcher Edge Cases', () => {
         expect(user2Result.total).toBe(0);
 
         // Verify correct clients were called for each user
-        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_ID);
-        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_2_ID);
+        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_SESSION_ID);
+        expect(mockAuthManager.getGmailClient).toHaveBeenCalledWith(REGULAR_USER_2_SESSION_ID);
       });
 
       it('should isolate cache corruption between users', async () => {
@@ -748,7 +649,7 @@ describe('EmailFetcher Edge Cases', () => {
 
       it('should handle user-specific database connection errors', async () => {
         // Mock database to fail for specific user operations
-        mockDbManager.searchEmails.mockImplementation((criteria) => {
+        dbManagers[REGULAR_USER_ID].searchEmails.mockImplementation((criteria: any) => {
           if (criteria.user_id === REGULAR_USER_ID) {
             return Promise.reject(new Error('Database connection failed for user 1'));
           }
@@ -777,9 +678,9 @@ describe('EmailFetcher Edge Cases', () => {
         // Force sync for all users
         mockCacheManager.get = jest.fn().mockReturnValue(null);
 
-        const adminGmailClient = await mockAuthManager.getGmailClient(ADMIN_USER_ID);
-        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_ID);
-        const user2GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_2_ID);
+        const adminGmailClient = await mockAuthManager.getGmailClient(ADMIN_SESSION_ID);
+        const user1GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_SESSION_ID);
+        const user2GmailClient = await mockAuthManager.getGmailClient(REGULAR_USER_2_SESSION_ID);
 
         // Admin succeeds
         adminGmailClient.users.messages.list.mockResolvedValue(mockListResponse.empty);
@@ -836,15 +737,15 @@ describe('EmailFetcher Edge Cases', () => {
 
       it('should handle concurrent session timeouts', async () => {
         // Mock all sessions to timeout during operation
-        mockAuthManager.getGmailClient.mockImplementation((sessionIdOrUserId) => {
+        mockAuthManager.getGmailClient.mockImplementation((sessionId: string) => {
           // Map sessionId back to userId for consistent error messages
           const userIdMap: { [key: string]: string } = {
-            'admin-edge-session-id': ADMIN_USER_ID,
-            'user1-edge-session-id': REGULAR_USER_ID,
-            'user2-edge-session-id': REGULAR_USER_2_ID
+            [ADMIN_SESSION_ID]: ADMIN_USER_ID,
+            [REGULAR_USER_SESSION_ID]: REGULAR_USER_ID,
+            [REGULAR_USER_2_SESSION_ID]: REGULAR_USER_2_ID
           };
           
-          const userId = userIdMap[sessionIdOrUserId as string] || sessionIdOrUserId;
+          const userId = userIdMap[sessionId as string] || sessionId;
           return Promise.reject(new Error(`Session timeout for ${userId}`));
         });
 
@@ -870,8 +771,15 @@ describe('EmailFetcher Edge Cases', () => {
 
     describe('Multi-User Authentication Failure Edge Cases', () => {
       it('should handle invalid user context gracefully', async () => {
+        // [FIX] Add db manager for 'non-existent-user' to avoid 'User not found' error
+        const nonExistentUserDbManager = createMockDatabase() as any;
+        // Configure mock methods with proper return values
+        nonExistentUserDbManager.searchEmails.mockResolvedValue([]);
+        nonExistentUserDbManager.getEmailCount.mockResolvedValue(0);
+        nonExistentUserDbManager.upsertEmailIndex.mockResolvedValue(undefined);
+        dbManagers['non-existent-user'] = nonExistentUserDbManager;
         // Mock auth manager to reject invalid users
-        mockAuthManager.getSessionId.mockImplementation((userId) => {
+        mockAuthManager.getSessionId.mockImplementation((userId: string) => {
           if (userId === 'non-existent-user') {
             return Promise.reject(new Error('User not found'));
           }
@@ -885,8 +793,15 @@ describe('EmailFetcher Edge Cases', () => {
       });
 
       it('should handle malformed session data', async () => {
+        // [FIX] Add db manager for 'malformed-user' to avoid 'User not found' error
+        const malformedUserDbManager = createMockDatabase() as any;
+        // Configure mock methods with proper return values
+        malformedUserDbManager.searchEmails.mockResolvedValue([]);
+        malformedUserDbManager.getEmailCount.mockResolvedValue(0);
+        malformedUserDbManager.upsertEmailIndex.mockResolvedValue(undefined);
+        dbManagers['malformed-user'] = malformedUserDbManager;
         // Mock getSessionId to return malformed session
-        mockAuthManager.getSessionId.mockImplementation((userId) => {
+        mockAuthManager.getSessionId.mockImplementation((userId: string) => {
           if (userId === 'malformed-user') {
             return Promise.resolve('malformed-session-id');
           }
@@ -894,7 +809,7 @@ describe('EmailFetcher Edge Cases', () => {
         });
 
         // Mock getGmailClient to reject malformed sessions
-        mockAuthManager.getGmailClient.mockImplementation((sessionId) => {
+        mockAuthManager.getGmailClient.mockImplementation((sessionId: string) => {
           if (sessionId === 'malformed-session-id') {
             return Promise.reject(new Error('Malformed session data'));
           }

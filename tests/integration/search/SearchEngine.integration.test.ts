@@ -178,7 +178,8 @@ describe('SearchEngine Multi-User OAuth Integration Tests', () => {
     } as unknown as EmailFetcher;
     
     // Initialize SearchEngine
-    searchEngine = new SearchEngine(userDbInitializer, emailFetcher);
+    userManager = (authManager as any).userManager as UserManager;
+    searchEngine = new SearchEngine(userDbInitializer, userManager);
     
     // Create test users and sessions
     await setupTestUsersAndSessions();
@@ -226,8 +227,11 @@ describe('SearchEngine Multi-User OAuth Integration Tests', () => {
    */
   async function setupTestUsersAndSessions(): Promise<void> {
     for (const user of testUsers) {
+      // Explicitly register the user in UserManager with the test userId
+      await userManager.createUser(user.email, user.displayName, user.userId);
       // Create user session
-      const sessionId = await authManager.createUserSession(user.email, user.displayName);
+      const userSession = await authManager.createUserSession(user.email, user.displayName);
+      const sessionId = userSession.getSessionData().sessionId;
       
       // Store mock OAuth tokens for the session
       const userManagerInstance = (authManager as any).userManager as UserManager;
@@ -508,7 +512,8 @@ describe('SearchEngine Multi-User OAuth Integration Tests', () => {
     describe('User Session Management', () => {
       it('should handle multiple active sessions per user', async () => {
         // Create a second session for user-1
-        const secondSessionId = await authManager.createUserSession(testUsers[0].email);
+        const secondUserSession = await authManager.createUserSession(testUsers[0].email);
+        const secondSessionId = secondUserSession.getSessionData().sessionId;
         const secondContext = {
           user_id: 'user-1',
           session_id: secondSessionId

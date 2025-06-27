@@ -11,73 +11,62 @@ import path from 'path';
 import os from 'os';
 import { createMockGmailClient } from '../../utils/testHelpers.js';
 
+// --- BEGIN FACTORY AND CLEANUP SETUP ---
+class TestUserDatabaseManagerFactory {
+  private dbs = new Map<string, DatabaseManager>();
+  private dbPaths = new Map<string, string>();
+  private tempDirs: string[] = [];
+
+  async getUserDatabaseManager(userId: string): Promise<DatabaseManager> {
+    if (this.dbs.has(userId)) return this.dbs.get(userId)!;
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `email-test-${userId}-`));
+    this.tempDirs.push(tempDir);
+    const dbPath = path.join(tempDir, `user-${userId}.db`);
+    this.dbPaths.set(userId, dbPath);
+    process.env.STORAGE_PATH = tempDir; // If needed by DBManager
+    const db = new DatabaseManager(dbPath);
+    await db.initialize();
+    this.dbs.set(userId, db);
+    return db;
+  }
+
+  async closeAndCleanup() {
+    for (const db of this.dbs.values()) await db.close();
+    for (const dir of this.tempDirs) await fs.rm(dir, { recursive: true, force: true });
+    this.dbs.clear();
+    this.dbPaths.clear();
+    this.tempDirs = [];
+  }
+}
+// --- END FACTORY AND CLEANUP SETUP ---
+
 describe('EmailFetcher Integration Tests', () => {
   let emailFetcher: EmailFetcher;
-  let dbManager: DatabaseManager;
+  let userDbManagerFactory: any;
   let authManager: AuthManager;
   let cacheManager: CacheManager;
   let mockGmailClient: any;
-  let testDbPath: string;
-  
+  const TEST_USER_ID = 'test-user-1';
+
   beforeEach(async () => {
-    // 🔧 FIX: Reset singleton to ensure fresh database instance for each single-user test
-    (DatabaseManager as any).singletonInstance = null;
-    
-    // Create a test database in temp directory
-    const testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'email-test-'));
-    testDbPath = path.join(testDir, 'test-emails.db');
-    process.env.STORAGE_PATH = testDir;
-    
-    // 🔍 DIAGNOSTIC: Log single-user database setup
-    console.log('🔍 SINGLE-USER SETUP:', {
-      testDir,
-      testDbPath,
-      dbInstanceId: DatabaseManager.getInstance().getInstanceId(),
-      dbUserId: DatabaseManager.getInstance().getUserId()
-    });
-    
-    // Initialize real database manager
-    dbManager = DatabaseManager.getInstance();
-    await dbManager.initialize();
-    
-    // Mock auth manager and Gmail client
-   mockGmailClient = createMockGmailClient();
-    
+    userDbManagerFactory = new TestUserDatabaseManagerFactory();
+    mockGmailClient = createMockGmailClient();
     authManager = {
       getSessionId: jest.fn().mockImplementation(() => 'mock-session-id'),
       getGmailClient: jest.fn().mockImplementation(() => Promise.resolve(mockGmailClient)),
       hasValidAuth: jest.fn().mockImplementation(() => Promise.resolve(true)),
     } as unknown as AuthManager;
-    
-    // Use real cache manager
     cacheManager = new CacheManager();
-    
-    // Create EmailFetcher with real database and cache
-    emailFetcher = new EmailFetcher(dbManager, authManager, cacheManager);
-    
-    // Seed test data
+    emailFetcher = new EmailFetcher(userDbManagerFactory as any, authManager, cacheManager);
     await seedTestData();
-    
-    // 🔍 DIAGNOSTIC: Verify seeded data
-    const seededEmails = await dbManager.searchEmails({ limit: 10, offset: 0 });
-    console.log('🔍 SINGLE-USER SEEDED:', {
-      emailCount: seededEmails.length,
-      emailIds: seededEmails.map(e => e.id),
-      userIds: seededEmails.map(e => e.user_id)
-    });
   });
-  
+
   afterEach(async () => {
-    // Clean up
-    await dbManager.close();
-    if (testDbPath) {
-      const testDir = path.dirname(testDbPath);
-      await fs.rm(testDir, { recursive: true, force: true }).catch(() => {});
-    }
+    await userDbManagerFactory.closeAndCleanup();
   });
-  
+
   async function seedTestData() {
-    // Create test emails
+    const dbManager = await userDbManagerFactory.getUserDatabaseManager(TEST_USER_ID);
     const testEmails: EmailIndex[] = [
       {
         id: 'email1',
@@ -92,7 +81,8 @@ describe('EmailFetcher Integration Tests', () => {
         hasAttachments: false,
         labels: ['INBOX', 'IMPORTANT'],
         snippet: 'This is an important test email',
-        archived: false
+        archived: false,
+        user_id: TEST_USER_ID
       },
       {
         id: 'email2',
@@ -107,7 +97,8 @@ describe('EmailFetcher Integration Tests', () => {
         hasAttachments: true,
         labels: ['INBOX'],
         snippet: 'This is a regular test email',
-        archived: false
+        archived: false,
+        user_id: TEST_USER_ID
       },
       {
         id: 'email3',
@@ -122,7 +113,8 @@ describe('EmailFetcher Integration Tests', () => {
         hasAttachments: false,
         labels: ['INBOX', 'PROMOTIONS'],
         snippet: 'This is a newsletter',
-        archived: false
+        archived: false,
+        user_id: TEST_USER_ID
       },
       {
         id: 'email4',
@@ -137,102 +129,52 @@ describe('EmailFetcher Integration Tests', () => {
         hasAttachments: false,
         labels: ['PROMOTIONS'],
         snippet: 'This is an archived newsletter',
-        archived: true
+        archived: true,
+        user_id: TEST_USER_ID
       }
     ];
-    
-    // Insert into database
     for (const email of testEmails) {
       await dbManager.upsertEmailIndex(email);
     }
   }
-  
+
   describe('Single-User OAuth Flow Tests', () => {
     it('should list emails from database without sync', async () => {
-      // Setup Gmail client to allow for possible call but return no messages
-      mockGmailClient.users.messages.list.mockResolvedValue({
-        data: { messages: [] }
-      });
-      
-      // Set last sync time to be recent
+      mockGmailClient.users.messages.list.mockResolvedValue({ data: { messages: [] } });
       cacheManager.set('last_gmail_sync', Date.now().toString(), '3600');
-      
-      // List emails
-      const result = await emailFetcher.listEmails({
-        limit: 10,
-        offset: 0
-      });
-      
-      // Verify results
-      // All 4 emails are present in the DB, so expect 4
+      const result = await emailFetcher.listEmails({ limit: 10, offset: 0 }, TEST_USER_ID);
       expect(result.emails.length).toBe(4);
       expect(result.total).toBe(4);
     });
     
     it('should filter emails by category', async () => {
-      // List high priority emails
-      const highResult = await emailFetcher.listEmails({
-        category: PriorityCategory.HIGH,
-        limit: 10,
-        offset: 0
-      });
-      
-      // Verify high priority results
+      const highResult = await emailFetcher.listEmails({ category: PriorityCategory.HIGH, limit: 10, offset: 0 }, TEST_USER_ID);
       expect(highResult.emails.length).toBe(1);
       expect(highResult.emails[0].id).toBe('email1');
       
-      // List medium priority emails
-      const mediumResult = await emailFetcher.listEmails({
-        category: PriorityCategory.MEDIUM,
-        limit: 10,
-        offset: 0
-      });
-      
-      // Verify medium priority results
+      const mediumResult = await emailFetcher.listEmails({ category: PriorityCategory.MEDIUM, limit: 10, offset: 0 }, TEST_USER_ID);
       expect(mediumResult.emails.length).toBe(1);
       expect(mediumResult.emails[0].id).toBe('email2');
     });
     
     it('should filter emails by year', async () => {
-      // List 2023 emails
-      const result2023 = await emailFetcher.listEmails({
-        year: 2023,
-        limit: 10,
-        offset: 0
-      });
-      
-      // Verify 2023 results
+      const result2023 = await emailFetcher.listEmails({ year: 2023, limit: 10, offset: 0 }, TEST_USER_ID);
       expect(result2023.emails.length).toBe(3);
       
-      // List 2022 emails (only archived)
-      const result2022 = await emailFetcher.listEmails({
-        year: 2022,
-        archived: true,
-        limit: 10,
-        offset: 0
-      });
-      
-      // Verify 2022 results
+      const result2022 = await emailFetcher.listEmails({ year: 2022, archived: true, limit: 10, offset: 0 }, TEST_USER_ID);
       expect(result2022.emails.length).toBe(1);
       expect(result2022.emails[0].id).toBe('email4');
     });
     
     it('should include archived emails when requested', async () => {
-      const result = await emailFetcher.listEmails({
-        archived: true,
-        limit: 10,
-        offset: 0
-      });
-      // Only archived emails should be returned
+      const result = await emailFetcher.listEmails({ archived: true, limit: 10, offset: 0 }, TEST_USER_ID);
       expect(result.emails.length).toBe(1);
       expect(result.emails[0].id).toBe('email4');
     });
     
     it('should synchronize with Gmail when needed', async () => {
-      // Clear last sync time to force synchronization
       cacheManager.delete('last_gmail_sync');
       
-      // Setup Gmail API responses
       mockGmailClient.users.messages.list.mockResolvedValue({
         data: {
           messages: [{ id: 'new-email', threadId: 'new-thread' }]
@@ -258,53 +200,43 @@ describe('EmailFetcher Integration Tests', () => {
         }
       });
       
-      // List emails
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0
-      });
+      }, TEST_USER_ID);
       
-      // Verify Gmail API was called
       expect(mockGmailClient.users.messages.list).toHaveBeenCalled();
       expect(mockGmailClient.users.messages.get).toHaveBeenCalled();
       
-      // Verify new email was added to results
-      // Now there are 5 emails (4 original + 1 new)
       expect(result.emails.length).toBe(5);
       expect(result.emails.some(e => e.id === 'new-email')).toBe(true);
     });
     
     it('should handle pagination correctly', async () => {
-      // List first page (2 items)
       const page1 = await emailFetcher.listEmails({
         limit: 2,
         offset: 0
-      });
+      }, TEST_USER_ID);
       
-      // Verify first page
       expect(page1.emails.length).toBe(2);
-      expect(page1.total).toBe(4); // All 4 emails
+      expect(page1.total).toBe(4);
       
-      // List second page (2 items)
       const page2 = await emailFetcher.listEmails({
         limit: 2,
         offset: 2
-      });
+      }, TEST_USER_ID);
       
-      // Verify second page
       expect(page2.emails.length).toBe(2);
       expect(page2.total).toBe(4);
     });
     
     it('should handle empty results gracefully', async () => {
-      // List emails with non-matching criteria
       const result = await emailFetcher.listEmails({
-        year: 2025, // No emails from this year
+        year: 2025,
         limit: 10,
         offset: 0
-      });
+      }, TEST_USER_ID);
       
-      // Verify empty results
       expect(result.emails.length).toBe(0);
       expect(result.total).toBe(0);
     });
@@ -314,10 +246,8 @@ describe('EmailFetcher Integration Tests', () => {
         hasAttachments: true,
         limit: 10,
         offset: 0
-      });
-      // 🔧 FIX: DB correctly filters by hasAttachments, expect only matching emails
+      }, TEST_USER_ID);
       expect(withAttachments.emails.length).toBe(1);
-      // Verify all returned emails have attachments
       expect(withAttachments.emails.every(e => e.hasAttachments)).toBe(true);
     });
     
@@ -326,24 +256,20 @@ describe('EmailFetcher Integration Tests', () => {
         labels: ['IMPORTANT'],
         limit: 10,
         offset: 0
-      });
-      // 🔧 FIX: DB correctly filters by labels, expect only matching emails
+      }, TEST_USER_ID);
       expect(importantEmails.emails.length).toBe(1);
-      // Verify all returned emails have the IMPORTANT label
       expect(importantEmails.emails.every(e => e.labels && e.labels.includes('IMPORTANT'))).toBe(true);
     });
     
     it('should combine multiple filters correctly', async () => {
-      // List emails with multiple filters
       const result = await emailFetcher.listEmails({
         category: PriorityCategory.LOW,
         year: 2023,
         archived: false,
         limit: 10,
         offset: 0
-      });
+      }, TEST_USER_ID);
       
-      // Verify results
       expect(result.emails.length).toBe(1);
       expect(result.emails[0].id).toBe('email3');
     });
@@ -354,14 +280,11 @@ describe('EmailFetcher Integration Tests', () => {
     let mockUserSessions: Map<string, any>;
     let mockUsers: Map<string, UserProfile>;
     
-    // Test users
     const ADMIN_USER_ID = 'admin-user-1';
     const REGULAR_USER_ID = 'regular-user-1';
     const REGULAR_USER_2_ID = 'regular-user-2';
     
-    // 🔧 FIX: Reset singleton before multi-user tests to ensure isolation
     beforeAll(async () => {
-      // Force reset the singleton instance to prevent contamination from single-user tests
       (DatabaseManager as any).singletonInstance = null;
     });
     
@@ -396,34 +319,14 @@ describe('EmailFetcher Integration Tests', () => {
     };
 
     beforeEach(async () => {
-      // Create a test database in temp directory
-      const testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'email-multiuser-test-'));
-      testDbPath = path.join(testDir, 'test-emails.db');
-      process.env.STORAGE_PATH = testDir;
-      
-      // 🔧 FIX: Ensure we get a fresh database instance for each multi-user test
-      (DatabaseManager as any).singletonInstance = null;
-      
-      // 🔍 DIAGNOSTIC: Log multi-user database setup
-      console.log('🔍 MULTI-USER SETUP:', {
-        testDir,
-        testDbPath,
-        dbInstanceId: DatabaseManager.getInstance().getInstanceId(),
-        dbUserId: DatabaseManager.getInstance().getUserId(),
-        storagePathEnv: process.env.STORAGE_PATH
-      });
-      
-      // Initialize real database manager
-      dbManager = DatabaseManager.getInstance();
-      await dbManager.initialize();
-      
+      // Create a per-user database manager factory for multi-user tests
+      userDbManagerFactory = new TestUserDatabaseManagerFactory();
       // Setup mock users and sessions
       mockUsers = new Map([
         [ADMIN_USER_ID, adminUser],
         [REGULAR_USER_ID, regularUser1],
         [REGULAR_USER_2_ID, regularUser2]
       ]);
-      
       mockUserSessions = new Map([
         ['admin-session-id', {
           sessionId: 'admin-session-id',
@@ -450,20 +353,10 @@ describe('EmailFetcher Integration Tests', () => {
           getSessionData: () => ({ sessionId: 'expired-session-id', userId: REGULAR_USER_ID })
         }]
       ]);
-      
-      // Mock UserManager
-      userManager = {
-        getUserById: jest.fn().mockImplementation((userId) => mockUsers.get(userId as string)),
-        getSession: jest.fn().mockImplementation((sessionId) => mockUserSessions.get(sessionId as string)),
-        createSession: jest.fn(),
-        invalidateSession: jest.fn()
-      } as unknown as UserManager;
-      
       // Create multiple mock Gmail clients for different users
       const adminGmailClient = createMockGmailClient();
       const user1GmailClient = createMockGmailClient();
       const user2GmailClient = createMockGmailClient();
-      
       // Mock auth manager with session-based authentication
       authManager = {
         getSessionId: jest.fn().mockImplementation((userId) => {
@@ -472,14 +365,11 @@ describe('EmailFetcher Integration Tests', () => {
         }),
         getGmailClient: jest.fn().mockImplementation((sessionIdOrUserId) => {
           if (!sessionIdOrUserId) {
-            return Promise.resolve(createMockGmailClient()); // Single-user fallback
+            return Promise.resolve(createMockGmailClient());
           }
-          
-          // Check if it's a direct userId (from synchronizeWithGmail)
           if (sessionIdOrUserId === ADMIN_USER_ID ||
               sessionIdOrUserId === REGULAR_USER_ID ||
               sessionIdOrUserId === REGULAR_USER_2_ID) {
-            // Direct userId - return client for that user
             switch (sessionIdOrUserId) {
               case ADMIN_USER_ID:
                 return Promise.resolve(adminGmailClient);
@@ -491,14 +381,10 @@ describe('EmailFetcher Integration Tests', () => {
                 return Promise.reject(new Error('Unknown user'));
             }
           }
-          
-          // Otherwise it's a sessionId - look up the session
           const session = mockUserSessions.get(sessionIdOrUserId as string);
           if (!session || !session.isValid()) {
             return Promise.reject(new Error('Invalid or expired session'));
           }
-          
-          // Return user-specific Gmail client based on session
           switch (session.userId) {
             case ADMIN_USER_ID:
               return Promise.resolve(adminGmailClient);
@@ -511,8 +397,7 @@ describe('EmailFetcher Integration Tests', () => {
           }
         }),
         hasValidAuth: jest.fn().mockImplementation((sessionId) => {
-          if (!sessionId) return Promise.resolve(true); // Single-user fallback
-          
+          if (!sessionId) return Promise.resolve(true);
           const session = mockUserSessions.get(sessionId as string);
           return Promise.resolve(session && session.isValid());
         }),
@@ -521,32 +406,15 @@ describe('EmailFetcher Integration Tests', () => {
           return session && session.isValid();
         })
       } as unknown as AuthManager;
-      
-      // Use real cache manager but with user isolation
       cacheManager = new CacheManager();
-      
-      // Create EmailFetcher with multi-user support
-      emailFetcher = new EmailFetcher(dbManager, authManager, cacheManager);
-      
-      // Seed test data for different users
+      emailFetcher = new EmailFetcher(userDbManagerFactory as any, authManager, cacheManager);
       await seedMultiUserTestData();
-      
-      // 🔍 DIAGNOSTIC: Verify multi-user seeded data
-      const allEmails = await dbManager.searchEmails({ limit: 20, offset: 0 });
-      const adminEmails = await dbManager.searchEmails({ limit: 10, offset: 0, user_id: ADMIN_USER_ID });
-      const user1Emails = await dbManager.searchEmails({ limit: 10, offset: 0, user_id: REGULAR_USER_ID });
-      const user2Emails = await dbManager.searchEmails({ limit: 10, offset: 0, user_id: REGULAR_USER_2_ID });
-      
-      console.log('🔍 MULTI-USER SEEDED:', {
-        totalEmails: allEmails.length,
-        adminEmails: adminEmails.length,
-        user1Emails: user1Emails.length,
-        user2Emails: user2Emails.length,
-        allEmailUserIds: allEmails.map(e => ({ id: e.id, user_id: e.user_id })),
-        dbPath: testDbPath
-      });
     });
     
+    afterEach(async () => {
+      await userDbManagerFactory.closeAndCleanup();
+    });
+
     async function seedMultiUserTestData() {
       // Create test emails for different users
       const adminEmails: EmailIndex[] = [
@@ -567,7 +435,6 @@ describe('EmailFetcher Integration Tests', () => {
           user_id: ADMIN_USER_ID
         }
       ];
-      
       const user1Emails: EmailIndex[] = [
         {
           id: 'user1-email-1',
@@ -602,7 +469,6 @@ describe('EmailFetcher Integration Tests', () => {
           user_id: REGULAR_USER_ID
         }
       ];
-      
       const user2Emails: EmailIndex[] = [
         {
           id: 'user2-email-1',
@@ -621,10 +487,18 @@ describe('EmailFetcher Integration Tests', () => {
           user_id: REGULAR_USER_2_ID
         }
       ];
-      
-      // Insert emails into database with user_id
-      for (const email of [...adminEmails, ...user1Emails, ...user2Emails]) {
-        await dbManager.upsertEmailIndex(email);
+      // Insert emails into database with user_id using the factory
+      const adminDb = await userDbManagerFactory.getUserDatabaseManager(ADMIN_USER_ID);
+      for (const email of adminEmails) {
+        await adminDb.upsertEmailIndex(email);
+      }
+      const user1Db = await userDbManagerFactory.getUserDatabaseManager(REGULAR_USER_ID);
+      for (const email of user1Emails) {
+        await user1Db.upsertEmailIndex(email);
+      }
+      const user2Db = await userDbManagerFactory.getUserDatabaseManager(REGULAR_USER_2_ID);
+      for (const email of user2Emails) {
+        await user2Db.upsertEmailIndex(email);
       }
     }
     
@@ -634,8 +508,6 @@ describe('EmailFetcher Integration Tests', () => {
           limit: 10,
           offset: 0
         }, REGULAR_USER_ID);
-        
-        // 🔍 DIAGNOSTIC: Log session validation results
         console.log('🔍 SESSION VALIDATION:', {
           userId: REGULAR_USER_ID,
           resultCount: result.emails.length,
@@ -643,14 +515,11 @@ describe('EmailFetcher Integration Tests', () => {
           emailIds: result.emails.map(e => e.id),
           userIds: result.emails.map(e => e.user_id)
         });
-        
-        // Verify session-based auth was called (through authManager.getGmailClient)
         expect(authManager.getGmailClient).toHaveBeenCalled();
         expect(result.emails.length).toBeGreaterThan(0);
       });
       
       it('should reject access with invalid session', async () => {
-        // Mock invalid session
         (authManager.getGmailClient as jest.Mock).mockImplementation(() =>
           Promise.reject(new Error('Invalid or expired session'))
         );
@@ -662,7 +531,6 @@ describe('EmailFetcher Integration Tests', () => {
       });
       
       it('should handle session expiration during email operations', async () => {
-        // Mock session expiring mid-operation
         (authManager.getGmailClient as jest.Mock).mockImplementationOnce(() =>
           Promise.reject(new Error('Session expired'))
         );
@@ -676,13 +544,11 @@ describe('EmailFetcher Integration Tests', () => {
     
     describe('User Data Isolation', () => {
       it('should return only user-specific emails', async () => {
-        // Test user 1 sees only their emails
         const user1Result = await emailFetcher.listEmails({
           limit: 10,
           offset: 0
         }, REGULAR_USER_ID);
         
-        // 🔍 DIAGNOSTIC: Log user isolation results
         console.log('🔍 USER ISOLATION USER1:', {
           userId: REGULAR_USER_ID,
           resultCount: user1Result.emails.length,
@@ -696,7 +562,6 @@ describe('EmailFetcher Integration Tests', () => {
           email.user_id === REGULAR_USER_ID || (email.recipients && email.recipients.includes('user1@example.com'))
         )).toBe(true);
         
-        // Test user 2 sees only their emails
         const user2Result = await emailFetcher.listEmails({
           limit: 10,
           offset: 0
@@ -709,7 +574,6 @@ describe('EmailFetcher Integration Tests', () => {
       });
       
       it('should prevent cross-user data access', async () => {
-        // User 1 should not see user 2's emails
         const user1Result = await emailFetcher.listEmails({
           limit: 10,
           offset: 0
@@ -724,7 +588,6 @@ describe('EmailFetcher Integration Tests', () => {
       });
       
       it('should isolate cache data between users', async () => {
-        // 🔍 DIAGNOSTIC: Check cacheManager mock setup
         console.log('🔍 CACHE MANAGER MOCK:', {
           isMock: jest.isMockFunction(cacheManager.get),
           getType: typeof cacheManager.get,
@@ -732,22 +595,18 @@ describe('EmailFetcher Integration Tests', () => {
           cacheManagerKeys: Object.keys(cacheManager)
         });
         
-        // Mock cacheManager.get to track calls
         const mockGet = jest.spyOn(cacheManager, 'get');
         
-        // User 1 queries emails (should cache)
         await emailFetcher.listEmails({
           limit: 5,
           offset: 0
         }, REGULAR_USER_ID);
         
-        // User 2 queries emails (should have separate cache)
         await emailFetcher.listEmails({
           limit: 5,
           offset: 0
         }, REGULAR_USER_2_ID);
         
-        // Verify different cache keys are used (implicit through user_id parameter)
         expect(mockGet).toHaveBeenCalled();
         mockGet.mockRestore();
       });
@@ -755,7 +614,6 @@ describe('EmailFetcher Integration Tests', () => {
     
     describe('Role-Based Access Control', () => {
       it('should allow admin to access system-wide operations', async () => {
-        // Admin should be able to access emails (implementation dependent)
         const adminResult = await emailFetcher.listEmails({
           limit: 10,
           offset: 0
@@ -766,13 +624,11 @@ describe('EmailFetcher Integration Tests', () => {
       });
       
       it('should restrict regular users to their own data', async () => {
-        // Regular user should only see their own emails
         const userResult = await emailFetcher.listEmails({
           limit: 10,
           offset: 0
         }, REGULAR_USER_ID);
         
-        // Verify all emails belong to the user
         expect(userResult.emails.every(email =>
           email.user_id === REGULAR_USER_ID ||
           email.recipients && email.recipients.some(recipient => recipient.includes('user1@example.com'))
@@ -782,7 +638,6 @@ describe('EmailFetcher Integration Tests', () => {
     
     describe('Multi-User Session Management', () => {
       it('should handle concurrent multi-user operations', async () => {
-        // Simulate concurrent operations from different users
         const user1Promise = emailFetcher.listEmails({
           limit: 5,
           offset: 0
@@ -798,24 +653,20 @@ describe('EmailFetcher Integration Tests', () => {
           offset: 0
         }, ADMIN_USER_ID);
         
-        // Wait for all operations to complete
         const [user1Result, user2Result, adminResult] = await Promise.all([
           user1Promise,
           user2Promise,
           adminPromise
         ]);
         
-        // Verify all operations succeeded with proper isolation
         expect(user1Result.emails.length).toBeGreaterThan(0);
         expect(user2Result.emails.length).toBeGreaterThan(0);
         expect(adminResult.emails.length).toBeGreaterThan(0);
         
-        // Verify Gmail client was called for each user
         expect(authManager.getGmailClient).toHaveBeenCalledTimes(3);
       });
       
       it('should maintain separate sessions for different users', async () => {
-        // 🔍 DIAGNOSTIC: Check authManager methods
         console.log('🔍 AUTH MANAGER METHODS:', {
           hasInvalidateSession: 'invalidateSession' in authManager,
           invalidateSessionType: typeof (authManager as any).invalidateSession,
@@ -823,7 +674,6 @@ describe('EmailFetcher Integration Tests', () => {
           isMockFunction: jest.isMockFunction((authManager as any).invalidateSession)
         });
         
-        // Add invalidateSession to authManager mock if missing
         if (!('invalidateSession' in authManager)) {
           (authManager as any).invalidateSession = jest.fn();
         }
@@ -832,10 +682,9 @@ describe('EmailFetcher Integration Tests', () => {
         
         mockInvalidateSession.mockImplementation((sessionId) => {
           const session = mockUserSessions.get(sessionId as string);
-          return session ? session.isValid() : false; // 🔧 FIX: Return false for undefined sessions
+          return session ? session.isValid() : false;
         });
         
-        // Test different session validations
         expect(mockInvalidateSession('admin-session-id')).toBe(true);
         expect(mockInvalidateSession('user1-session-id')).toBe(true);
         expect(mockInvalidateSession('expired-session-id')).toBe(false);
@@ -845,10 +694,8 @@ describe('EmailFetcher Integration Tests', () => {
     
     describe('Multi-User Synchronization with Gmail', () => {
       it('should synchronize Gmail data per user context', async () => {
-        // 🔧 FIX: Mock the authManager to return the user-specific Gmail client for REGULAR_USER_ID
         const user1GmailClient = await authManager.getGmailClient('user1-session-id');
         
-        // Override the authManager to return the pre-configured client for this user
         (authManager.getGmailClient as jest.Mock).mockImplementation((sessionIdOrUserId) => {
           if (sessionIdOrUserId === REGULAR_USER_ID || sessionIdOrUserId === 'user1-session-id') {
             return Promise.resolve(user1GmailClient);
@@ -856,15 +703,12 @@ describe('EmailFetcher Integration Tests', () => {
           return Promise.resolve(createMockGmailClient());
         });
         
-        // 🔧 FIX: Clear all possible cache keys to force Gmail sync
         cacheManager.delete(`last_gmail_sync_${REGULAR_USER_ID}`);
         cacheManager.delete('last_gmail_sync');
         
-        // Reset mock call history to ensure clean test state
         (user1GmailClient.users.messages.list as jest.Mock).mockClear();
         (user1GmailClient.users.messages.get as jest.Mock).mockClear();
         
-        // Setup user-specific Gmail responses
         const mockList = user1GmailClient.users.messages.list as any;
         mockList.mockResolvedValue({
           data: {
@@ -892,30 +736,25 @@ describe('EmailFetcher Integration Tests', () => {
           }
         } as any);
         
-        // Test synchronization for user 1 - Force sync by adding labels condition
         const result = await emailFetcher.listEmails({
           limit: 10,
           offset: 0,
-          labels: ['INBOX'] // Force sync by adding labels (triggers needsSynchronization)
+          labels: ['INBOX']
         }, REGULAR_USER_ID);
         
-        // Verify Gmail API was called with user context
         expect(mockList).toHaveBeenCalled();
         expect(result.emails.some(email => email.id === 'new-user1-email')).toBe(true);
       });
       
       it('should handle Gmail API errors per user', async () => {
-        // 🔍 DIAGNOSTIC: Check error mock setup
         console.log('🔍 GMAIL ERROR MOCK SETUP - Before:', {
           authManagerCallCount: (authManager.getGmailClient as jest.Mock).mock.calls.length
         });
         
-        // Mock Gmail API error for specific user - BEFORE calling getGmailClient
         (authManager.getGmailClient as jest.Mock).mockImplementationOnce(() =>
           Promise.reject(new Error('Gmail API error for user'))
         );
         
-        // Clear cache to force sync
         cacheManager.delete(`last_gmail_sync_${REGULAR_USER_ID}`);
         cacheManager.delete('last_gmail_sync');
         
@@ -923,7 +762,6 @@ describe('EmailFetcher Integration Tests', () => {
           mockImplementation: (authManager.getGmailClient as jest.Mock).getMockImplementation()
         });
         
-        // Should handle the error gracefully
         await expect(emailFetcher.listEmails({
           limit: 10,
           offset: 0
@@ -933,7 +771,6 @@ describe('EmailFetcher Integration Tests', () => {
     
     describe('Multi-User Error Handling', () => {
       it('should handle authentication failures with user context', async () => {
-        // Mock authentication failure
         (authManager.getGmailClient as jest.Mock).mockImplementation(() =>
           Promise.reject(new Error('Authentication failed'))
         );
@@ -945,7 +782,6 @@ describe('EmailFetcher Integration Tests', () => {
       });
       
       it('should handle session timeout during operations', async () => {
-        // Mock session becoming invalid during operation
         const mockSession = mockUserSessions.get('user1-session-id');
         if (mockSession) {
           mockSession.isValid = jest.fn().mockReturnValue(false);
@@ -962,12 +798,10 @@ describe('EmailFetcher Integration Tests', () => {
       });
       
       it('should handle invalid user context', async () => {
-        // 🔍 DIAGNOSTIC: Check invalid user handling
         console.log('🔍 INVALID USER TEST:', {
           authManagerCallCount: (authManager.getGmailClient as jest.Mock).mock.calls.length
         });
         
-        // Mock auth manager to reject invalid users
         (authManager.getGmailClient as jest.Mock).mockImplementationOnce(() =>
           Promise.reject(new Error('Invalid user context'))
         );
@@ -981,22 +815,18 @@ describe('EmailFetcher Integration Tests', () => {
     
     describe('Multi-User Cache Isolation', () => {
       it('should maintain separate cache entries for different users', async () => {
-        // User 1 caches their results
         const user1Result1 = await emailFetcher.listEmails({
           limit: 5,
           offset: 0
         }, REGULAR_USER_ID);
         
-        // User 2 caches their results
         const user2Result1 = await emailFetcher.listEmails({
           limit: 5,
           offset: 0
         }, REGULAR_USER_2_ID);
         
-        // Verify results are different
         expect(user1Result1.emails).not.toEqual(user2Result1.emails);
         
-        // Second call should use cache
         const user1Result2 = await emailFetcher.listEmails({
           limit: 5,
           offset: 0
@@ -1006,16 +836,13 @@ describe('EmailFetcher Integration Tests', () => {
       });
       
       it('should invalidate cache per user context', async () => {
-        // Cache results for user
         await emailFetcher.listEmails({
           limit: 5,
           offset: 0
         }, REGULAR_USER_ID);
         
-        // Simulate cache invalidation for user
         cacheManager.delete('last_gmail_sync');
         
-        // Force re-sync by clearing cache
         const result = await emailFetcher.listEmails({
           limit: 5,
           offset: 0
@@ -1029,7 +856,6 @@ describe('EmailFetcher Integration Tests', () => {
       it('should handle multiple users efficiently', async () => {
         const startTime = Date.now();
         
-        // Simulate multiple concurrent user operations
         const operations = [
           emailFetcher.listEmails({ limit: 10, offset: 0 }, ADMIN_USER_ID),
           emailFetcher.listEmails({ limit: 10, offset: 0 }, REGULAR_USER_ID),
@@ -1041,26 +867,22 @@ describe('EmailFetcher Integration Tests', () => {
         const results = await Promise.all(operations);
         const endTime = Date.now();
         
-        // Verify all operations completed
         expect(results.length).toBe(5);
         results.forEach(result => {
           expect(result.emails).toBeDefined();
           expect(Array.isArray(result.emails)).toBe(true);
         });
         
-        // Performance should be reasonable (less than 5 seconds for 5 operations)
         expect(endTime - startTime).toBeLessThan(5000);
       });
     });
     
     describe('Integration with Existing Architecture', () => {
       it('should maintain backward compatibility with single-user mode', async () => {
-        // Test single-user mode (no userId parameter)
         const singleUserResult = await emailFetcher.listEmails({
           limit: 10,
           offset: 0
-        });
-        
+        }, TEST_USER_ID);
         expect(singleUserResult.emails).toBeDefined();
         expect(Array.isArray(singleUserResult.emails)).toBe(true);
         expect(authManager.getGmailClient).toHaveBeenCalled();
@@ -1072,11 +894,9 @@ describe('EmailFetcher Integration Tests', () => {
           offset: 0
         }, REGULAR_USER_ID);
         
-        // Verify the flow was followed
         expect(authManager.getGmailClient).toHaveBeenCalled();
         expect(result.emails.length).toBeGreaterThan(0);
         
-        // Verify proper cleanup
         expect(result.total).toBeGreaterThanOrEqual(result.emails.length);
       });
     });

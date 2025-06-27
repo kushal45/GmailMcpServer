@@ -228,7 +228,7 @@ describe('DatabaseManager', () => {
         await dbManager.searchEmails({});
 
         expect(mockDb.all).toHaveBeenCalledWith(
-          expect.stringContaining('SELECT * FROM email_index'),
+         'SELECT *,COUNT(*) OVER () AS total_email_count FROM email_index WHERE 1=1 ORDER BY date DESC',
           [],
           expect.any(Function)
         );
@@ -298,7 +298,7 @@ describe('DatabaseManager', () => {
         await dbManager.getArchiveRules(true, 'test-user-id');
 
         const sqlCall = mockDb.all.mock.calls[0][0];
-        expect(sqlCall).toContain('WHERE enabled = 1');
+        expect(sqlCall).toContain('enabled = 1');
       });
     });
 

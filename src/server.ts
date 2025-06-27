@@ -74,7 +74,7 @@ export class GmailMcpServer {
     );
     this.searchEngine = new SearchEngine(
       userDatabaseInitializer,
-      this.emailFetcher
+      this.userManager
     );
     const formatRegistry = setupFormatterRegistry()
     this.archiveManager = new ArchiveManager(
@@ -89,7 +89,7 @@ export class GmailMcpServer {
     );
     this.jobQueue = new JobQueue();
     this.categorizationEngine = new CategorizationEngine(
-      this.databaseManager,
+      userDatabaseManagerFactory,
       this.cacheManager
     );
 

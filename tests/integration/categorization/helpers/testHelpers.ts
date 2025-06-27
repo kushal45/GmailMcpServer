@@ -1,5 +1,4 @@
 import { jest } from '@jest/globals';
-import type { MockedFunction } from 'jest-mock';
 import { EmailIndex, PriorityCategory } from '../../../../src/types/index.js';
 import { DatabaseManager } from '../../../../src/database/DatabaseManager.js';
 import { CacheManager } from '../../../../src/cache/CacheManager.js';
@@ -10,16 +9,53 @@ import { JobStatusStore } from '../../../../src/database/JobStatusStore.js';
 import { Job, JobStatus } from '../../../../src/types/index.js';
 import { CategorizationSystemConfig } from '../../../../src/categorization/config/CategorizationConfig.js';
 import { AnalysisMetrics } from '../../../../src/categorization/types.js';
-import fs from 'fs/promises';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { logger } from '../../../../src/utils/logger.js';
 import { Logger } from 'winston';
 import { DatabaseMigrationManager } from '../../../../src/database/DatabaseMigrationManager.js';
+import { userDatabaseManagerFactory } from '../../../../src/database/UserDatabaseManagerFactory.js';
+import { UserDatabaseManagerFactory } from '../../../../src/database/UserDatabaseManagerFactory.js';
+import fs from 'fs';
+import { DatabaseRegistry } from '../../../../src/database/DatabaseRegistry.js';
+
+// --- PER-TEST DB ISOLATION ---
+let testDbBaseDir: string | null = null;
+
+export async function setupIsolatedTestDb(testName: string) {
+  // Create a unique temp dir for this test
+  testDbBaseDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), `gmail-mcp-test-${testName}-`));
+  process.env.STORAGE_PATH = testDbBaseDir;
+  // Reset singletons so they use the new STORAGE_PATH
+  DatabaseRegistry.resetInstance();
+  UserDatabaseManagerFactory.resetInstance();
+  // Initialize registry and factory
+  const registry = DatabaseRegistry.getInstance(testDbBaseDir);
+  await registry.initialize();
+  const factory = UserDatabaseManagerFactory.getInstance();
+  await factory.initialize();
+  return { registry, factory, testDbBaseDir };
+}
+
+export async function cleanupIsolatedTestDb() {
+  if (testDbBaseDir) {
+    try {
+      await fsPromises.rm(testDbBaseDir, { recursive: true, force: true });
+    } catch (e) {
+      // Ignore errors
+    }
+    testDbBaseDir = null;
+  }
+}
 
 // Create test database manager
 let testDbPath: string;
 let testDbDir: string;
+
+// Track all created user DB paths for robust cleanup
+const createdUserDbPaths = new Set<string>();
+const userDbPathMap = new Map<string, string>(); // userId -> dbDir
 
 // --- SINGLETON RESET UTILS FOR TEST ISOLATION ---
 // Add this utility if not present in DatabaseManager
@@ -40,7 +76,7 @@ export async function createTestDatabaseManager(): Promise<DatabaseManager> {
   // Reset all singletons before DB creation for test isolation
   resetAllSingletons();
   // Create a unique test database in temp directory
-  testDbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gmail-test-'));
+  testDbDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'gmail-test-'));
   testDbPath = path.join(testDbDir, 'test-emails.db');
   
   // Set the storage path environment variable to our test directory
@@ -124,7 +160,7 @@ export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<v
   // Remove test database directory and file
   if (testDbDir) {
     try {
-      await fs.rm(testDbDir, { recursive: true, force: true });
+      await fsPromises.rm(testDbDir, { recursive: true, force: true });
       console.log('[DIAGNOSTIC] Cleaned up test DB directory:', testDbDir);
     } catch (error) {
       console.error('[DIAGNOSTIC] Failed to cleanup test database:', error);
@@ -132,16 +168,28 @@ export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<v
   }
 }
 
-// Seed test data into database
-export async function seedTestData(dbManager: DatabaseManager, emails: EmailIndex[]): Promise<void> {
-  // Set user_id to 'default' for all emails if not already set
-  const emailsWithUserId = emails.map(email => ({
-    ...email,
-    user_id: email.user_id || 'default'
-  }));
-  // Use bulk insert for efficiency
-  if (emailsWithUserId.length > 0) {
-    await dbManager.bulkUpsertEmailIndex(emailsWithUserId);
+// Robust multi-user aware seeding: always use the per-user DatabaseManager from the factory
+export async function seedTestData(
+  emails: EmailIndex[],
+  userDbManagerFactory: import('../../../../src/database/UserDatabaseManagerFactory.js').UserDatabaseManagerFactory,
+  userId?:string
+): Promise<void> {
+  // If a userId is provided, seed all emails into that user's DB (single-user mode)
+  if (userId) {
+    const dbManager = await userDbManagerFactory.getUserDatabaseManager(userId);
+    await dbManager.bulkUpsertEmailIndex(emails, userId);
+    return;
+  }
+  // Otherwise, group emails by user_id and seed each group into the correct per-user DB
+  const emailsByUser: Record<string, EmailIndex[]> = {};
+  for (const email of emails) {
+    const uid = email.user_id || 'default';
+    if (!emailsByUser[uid]) emailsByUser[uid] = [];
+    emailsByUser[uid].push(email);
+  }
+  for (const uid of Object.keys(emailsByUser)) {
+    const dbManager = await userDbManagerFactory.getUserDatabaseManager(uid);
+    await dbManager.bulkUpsertEmailIndex(emailsByUser[uid], uid);
   }
 }
 
@@ -171,21 +219,24 @@ export function createMockCacheManager(): CacheManager {
   } as unknown as CacheManager;
 }
 
-// Create CategorizationEngine with real database
-export async function createCategorizationEngineWithRealDb(): Promise<{
+/**
+ * Create CategorizationEngine with real database (multi-user aware, per-test factory)
+ * @param userDbManagerFactory The per-test UserDatabaseManagerFactory instance
+ */
+export async function createCategorizationEngineWithRealDb(
+  userDbManagerFactory: UserDatabaseManagerFactory
+): Promise<{
   categorizationEngine: CategorizationEngine;
-  dbManager: DatabaseManager;
   cacheManager: CacheManager;
+  userDbManagerFactory: UserDatabaseManagerFactory;
 }> {
-  const dbManager = await createTestDatabaseManager();
   const cacheManager = createMockCacheManager();
-  
-  const categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
-  
+  // Use the per-test factory for all multi-user aware CategorizationEngine instantiations
+  const categorizationEngine = new CategorizationEngine(userDbManagerFactory, cacheManager);
   return {
     categorizationEngine,
-    dbManager,
-    cacheManager
+    cacheManager,
+    userDbManagerFactory
   };
 }
 
@@ -825,7 +876,7 @@ export async function seedRealisticTestData(
     yearRange: { start: 2022, end: 2024 }
   });
   
-  await seedTestData(dbManager, emails);
+  await seedTestData(emails, userDatabaseManagerFactory);
   return emails;
 }
 
@@ -983,4 +1034,31 @@ export async function createWorkerWithRealComponents(): Promise<{
     dbManager,
     cacheManager
   };
+}
+
+// Enhanced cleanup: remove all created user DBs
+export async function cleanupAllUserTestDatabases() {
+  for (const dbDir of createdUserDbPaths) {
+    try {
+      await fsPromises.rm(dbDir, { recursive: true, force: true });
+    } catch (e) {
+      // Ignore errors
+    }
+  }
+  createdUserDbPaths.clear();
+  userDbPathMap.clear();
+}
+
+// Remove the entire directory where user DBs are created
+export async function cleanupAllUserDbDirectories() {
+  // Get the base path from the registry singleton
+  const registry = DatabaseRegistry.getInstance();
+  // Try to get the base path from the registry, fallback to env or default
+  const basePath = (registry as any).dbBasePath || process.env.STORAGE_PATH || './data/db';
+  try {
+    await fsPromises.rm(basePath, { recursive: true, force: true });
+    console.log(`[DIAGNOSTIC] Cleaned up all user DB directories at: ${basePath}`);
+  } catch (e) {
+    console.warn(`[DIAGNOSTIC] Failed to cleanup user DB directories at: ${basePath}`, e);
+  }
 }
