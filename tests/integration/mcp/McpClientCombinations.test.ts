@@ -67,7 +67,7 @@ describe("Gmail MCP Server - All MCP Tool Combinations", () => {
       // Initialize MCP client
       transport = new StdioClientTransport({
         command: "node",
-        args: ["--inspect-brk","./build/index.js"], // Removed --inspect-brk to avoid debugger handles
+        args: ["./build/index.js"], // Removed --inspect-brk to avoid debugger handles
       });
       client = new Client({
         name: "gmail-mcp-server",

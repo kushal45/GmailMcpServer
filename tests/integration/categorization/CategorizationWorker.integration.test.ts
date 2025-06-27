@@ -18,34 +18,23 @@ import { CacheManager } from "../../../src/cache/CacheManager.js";
 import { PriorityCategory, EmailIndex } from "../../../src/types/index.js";
 import { CategorizationSystemConfig } from "../../../src/categorization/config/CategorizationConfig.js";
 import {
-  cleanupTestDatabase,
-  createWorkerWithRealComponents,
   waitForJobCompletion,
-  waitForJobStatus,
-  createJobAndWaitForCompletion,
   submitMultipleJobs,
-  verifyAnalyzerResultsPersistence,
   verifyJobResultsIntegrity,
-  assertCompleteJobExecution,
   assertAnalyzerResultsIntegrity,
   assertPerformanceMetrics,
   measureProcessingTime,
   generateLargeEmailDataset,
-  seedRealisticTestData,
   createTestConfiguration,
   updateWorkerConfiguration,
   validateConfigurationIntegrity,
-  injectAnalyzerError,
-  simulateDatabaseConnectionDrop,
   measureMemoryUsage,
-  getWorkerState,
   waitForWorkerShutdown,
   restartWorker,
   delay,
   startLoggerCapture,
   stopLoggerCapture,
   setupIsolatedTestDb,
-  cleanupIsolatedTestDb,
   seedTestData,
   cleanupAllUserDbDirectories,
 } from "./helpers/testHelpers.js";
@@ -114,7 +103,7 @@ describe("CategorizationWorker Integration Tests", () => {
     const defaultDb = await await userDbManagerFactory.getUserDatabaseManager(
       "default"
     );
-    const seeded = await defaultDb.searchEmails({ user_id: "default" });
+    const seeded = await defaultDb.searchEmails({});
     console.log("[DEBUG] Emails in default DB after seeding:", seeded.length);
   });
 

@@ -1024,7 +1024,8 @@ export async function createWorkerWithRealComponents(): Promise<{
   console.log('[DIAGNOSTIC] (worker setup) DatabaseManager instance ID:', dbManager.getInstanceId());
   const jobQueue = new JobQueue();
   const cacheManager = new CacheManager();
-  const categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+  const userDbManagerFactory = UserDatabaseManagerFactory.getInstance();
+  const categorizationEngine = new CategorizationEngine(userDbManagerFactory, cacheManager);
   const worker = new CategorizationWorker(jobQueue, categorizationEngine);
   return {
     worker,
