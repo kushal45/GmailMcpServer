@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { CleanupPolicyEngine } from '../../../src/cleanup/CleanupPolicyEngine.js';
 import { DatabaseManager } from '../../../src/database/DatabaseManager.js';
-import { StalenessScorer } from '../../../src/cleanup/StalenessScorer.js';
 import { AccessPatternTracker } from '../../../src/cleanup/AccessPatternTracker.js';
 import { CleanupPolicy, EmailIndex, StalenessScore } from '../../../src/types/index.js';
 

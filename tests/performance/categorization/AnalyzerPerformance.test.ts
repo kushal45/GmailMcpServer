@@ -1,4 +1,3 @@
-
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { DateSizeAnalyzer } from '../../../src/categorization/analyzers/DateSizeAnalyzer.js';
 import { LabelClassifier } from '../../../src/categorization/analyzers/LabelClassifier.js';
@@ -109,6 +108,7 @@ describe('Analyzer Performance Tests', () => {
       for (const email of testEmails.slice(0, 1000)) {
         const context: EmailAnalysisContext = {
           email,
+          user_id: 'test-user',
           subject: email.subject || 'Test Subject',
           sender: email.sender || 'test@example.com',
           snippet: email.snippet || 'Test snippet',
@@ -138,6 +138,7 @@ describe('Analyzer Performance Tests', () => {
       const testEmail = testEmails[0];
       const context: EmailAnalysisContext = {
         email: testEmail,
+        user_id: 'test-user',
         subject: testEmail.subject || 'Test Subject',
         sender: testEmail.sender || 'test@example.com',
         snippet: testEmail.snippet || 'Test snippet',
@@ -186,6 +187,7 @@ describe('Analyzer Performance Tests', () => {
       const concurrentEmails = testEmails.slice(0, 100);
       const contexts = concurrentEmails.map(email => ({
         email,
+        user_id: 'test-user',
         subject: email.subject || 'Test Subject',
         sender: email.sender || 'test@example.com',
         snippet: email.snippet || 'Test snippet',
@@ -248,6 +250,7 @@ describe('Analyzer Performance Tests', () => {
       for (const email of testEmails.slice(0, 1000)) {
         const context: EmailAnalysisContext = {
           email,
+          user_id: 'test-user',
           subject: email.subject || 'Test Subject',
           sender: email.sender || 'test@example.com',
           snippet: email.snippet || 'Test snippet',
@@ -368,7 +371,7 @@ describe('Analyzer Performance Tests', () => {
       
       for (let i = 0; i < 1000; i++) {
         const labels = labelSets[i % labelSets.length];
-        await classifier.classifyLabels(labels);
+        await classifier.classifyLabels(labels, 'test-user');
       }
       
       const endTime = Date.now();
@@ -596,6 +599,7 @@ describe('Analyzer Performance Tests', () => {
       
       const context: EmailAnalysisContext = {
         email: testEmail,
+        user_id: 'test-user',
         subject: testEmail.subject || 'Test Subject',
         sender: testEmail.sender || 'test@example.com',
         snippet: testEmail.snippet || 'Test snippet',
@@ -632,6 +636,7 @@ describe('Analyzer Performance Tests', () => {
         
         const context: EmailAnalysisContext = {
           email: testEmail,
+          user_id: 'test-user',
           subject: testEmail.subject,
           sender: testEmail.sender || 'test@example.com',
           snippet: testEmail.snippet || 'Test snippet',
@@ -646,6 +651,79 @@ describe('Analyzer Performance Tests', () => {
       
       // Verify cache operations were called
       expect(mockCacheManager.set).toHaveBeenCalled();
+    });
+  });
+
+  describe('Multi-User Performance', () => {
+    let analyzer: IImportanceAnalyzer;
+    let testEmailsA: EmailIndex[];
+    let testEmailsB: EmailIndex[];
+
+    beforeEach(() => {
+      const config: ImportanceAnalyzerConfig = {
+        rules: [
+          {
+            id: 'multiuser-keyword',
+            name: 'Multiuser Keyword',
+            type: 'keyword',
+            priority: 100,
+            weight: 10,
+            keywords: ['multiuser', 'test']
+          }
+        ],
+        scoring: {
+          highThreshold: 8,
+          lowThreshold: -3,
+          defaultWeight: 1
+        },
+        caching: {
+          enabled: true,
+          keyStrategy: 'partial'
+        }
+      };
+      analyzer = factory.createImportanceAnalyzer(config);
+      testEmailsA = generatePerformanceTestEmails(100).map(e => ({ ...e, user_id: 'userA' }));
+      testEmailsB = generatePerformanceTestEmails(100).map(e => ({ ...e, user_id: 'userB' }));
+    });
+
+    it('should analyze emails for userA and userB in isolation and with good performance', async () => {
+      const startA = Date.now();
+      for (const email of testEmailsA) {
+        const context: EmailAnalysisContext = {
+          email,
+          user_id: 'userA',
+          subject: email.subject || 'Test Subject',
+          sender: email.sender || 'test@example.com',
+          snippet: email.snippet || 'Test snippet',
+          labels: email.labels || [],
+          date: email.date || new Date(),
+          size: email.size || 50000,
+          hasAttachments: email.hasAttachments || false
+        };
+        await analyzer.analyzeImportance(context);
+      }
+      const endA = Date.now();
+      const totalA = endA - startA;
+      expect(totalA).toBeLessThan(3000);
+
+      const startB = Date.now();
+      for (const email of testEmailsB) {
+        const context: EmailAnalysisContext = {
+          email,
+          user_id: 'userB',
+          subject: email.subject || 'Test Subject',
+          sender: email.sender || 'test@example.com',
+          snippet: email.snippet || 'Test snippet',
+          labels: email.labels || [],
+          date: email.date || new Date(),
+          size: email.size || 50000,
+          hasAttachments: email.hasAttachments || false
+        };
+        await analyzer.analyzeImportance(context);
+      }
+      const endB = Date.now();
+      const totalB = endB - startB;
+      expect(totalB).toBeLessThan(3000);
     });
   });
 });

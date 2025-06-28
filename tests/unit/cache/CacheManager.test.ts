@@ -46,9 +46,10 @@ describe('CacheManager', () => {
     it('should respect TTL expiration', async () => {
       const key = 'ttl-test';
       const value = 'test-value';
+      const userId = 'test-user';
       const ttl = 100; // 100ms
 
-      cacheManager.set(key, value, ttl);
+      cacheManager.set(key, value,userId, ttl);
       
       // Value should exist immediately
       expect(cacheManager.get(key)).toBe(value);
@@ -116,9 +117,10 @@ describe('CacheManager', () => {
 
   describe('cleanExpired', () => {
     it('should remove expired entries', async () => {
+      const userId= 'test-user';
       cacheManager.set('permanent', 'value');
-      cacheManager.set('temporary1', 'value', 50);
-      cacheManager.set('temporary2', 'value', 50);
+      cacheManager.set('temporary1', 'value',userId, 50);
+      cacheManager.set('temporary2', 'value', userId,50);
 
       expect(cacheManager.size()).toBe(3);
 
@@ -154,10 +156,10 @@ describe('CacheManager', () => {
         limit: 10,
         offset: 0
       };
+      const userId=`test-user`;
+      const key = CacheManager.emailListKey(userId,options);
 
-      const key = CacheManager.emailListKey(options);
-
-      expect(key).toBe(`email-list:${JSON.stringify(options)}`);
+      expect(key).toBe(`user:${userId}:email-list:${JSON.stringify(options)}`);
     });
 
     it('should handle partial options in email list key', () => {
@@ -165,23 +167,25 @@ describe('CacheManager', () => {
         limit: 20,
         offset: 10
       };
+      const userId=`test-user`;
+      const key = CacheManager.emailListKey(userId,options);
 
-      const key = CacheManager.emailListKey(options);
-
-      expect(key).toBe(`email-list:${JSON.stringify(options)}`);
+      expect(key).toBe(`user:${userId}:email-list:${JSON.stringify(options)}`);
     });
 
     it('should generate email cache key', () => {
+      const userId=`test-user`;
       const emailId = 'test-email-123';
-      const key = CacheManager.emailKey(emailId);
+      const key = CacheManager.emailKey(userId,emailId);
 
-      expect(key).toBe('email:test-email-123');
+      expect(key).toBe(`user:${userId}:email:test-email-123`);
     });
 
     it('should generate category stats cache key', () => {
-      const key = CacheManager.categoryStatsKey();
+      const userId=`test-user`;
+      const key = CacheManager.categoryStatsKey(userId);
 
-      expect(key).toBe('category-stats');
+      expect(key).toBe(`user:${userId}:category-stats`);
     });
   });
 

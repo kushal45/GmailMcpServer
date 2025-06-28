@@ -3,18 +3,24 @@ import { describe, expect, beforeEach, jest, test } from '@jest/globals';
 import { ArchiveManager } from '../../../src/archive/ArchiveManager';
 import { AuthManager } from '../../../src/auth/AuthManager';
 import { DatabaseManager } from '../../../src/database/DatabaseManager';
+import { UserDatabaseManagerFactory } from '../../../src/database/UserDatabaseManagerFactory';
 import { FileFormatterRegistry } from '../../../src/archive/formatters/FormatterRegistry';
 import { IFileFormatter } from '../../../src/archive/formatters/IFileFormatter';
 import { ValidationResultFactory } from '../../../src/archive/formatters/ValidationResult';
 import { UnsupportedFormatError, FormatterError } from '../../../src/archive/formatters/FormatterError';
+import { FileAccessControlManager } from '../../../src/services/FileAccessControlManager';
+
 import { EmailIndex } from '../../../src/types';
+import { UserContext } from '../../../src/types/file-access-control';
 import fs from 'fs/promises';
 import path from 'path';
 
 // Mock the module imports to prevent issues with ES modules
 jest.mock('../../../src/auth/AuthManager');
 jest.mock('../../../src/database/DatabaseManager');
+jest.mock('../../../src/database/UserDatabaseManagerFactory');
 jest.mock('../../../src/archive/formatters/FormatterRegistry');
+jest.mock('../../../src/services/FileAccessControlManager');
 jest.mock('fs/promises');
 jest.mock('path');
 
@@ -29,8 +35,23 @@ describe('ArchiveManager', () => {
   // Mock instances with 'any' type to avoid TypeScript errors
   let authManager: any;
   let databaseManager: any;
+  let userDbManagerFactory: any;
   let formatterRegistry: any;
+  let fileAccessControl: any;
+
   let archiveManager: ArchiveManager;
+
+  // Mock UserContext for tests
+  const mockUserContext: UserContext = {
+    user_id: 'test-user-123',
+    session_id: 'test-session-456',
+    roles: ['user'],
+    permissions: ['archive:read', 'archive:write'],
+    ip_address: '127.0.0.1',
+    user_agent: 'test-agent'
+  };
+
+
 
   // Mock Gmail client
   const mockGmailClient: any = {
@@ -102,11 +123,24 @@ describe('ArchiveManager', () => {
     // Setup mock instances
     authManager = new AuthManager();
     databaseManager = DatabaseManager.getInstance();
+    userDbManagerFactory = UserDatabaseManagerFactory.getInstance();
     formatterRegistry = new FileFormatterRegistry();
+    fileAccessControl = new FileAccessControlManager(databaseManager);
+
 
     // Setup auth manager mock
     // @ts-ignore - TypeScript error with mock return value
     authManager.getGmailClient = jest.fn().mockResolvedValue(mockGmailClient);
+    // @ts-ignore - TypeScript error with mock return value
+    authManager.hasValidAuth = jest.fn().mockResolvedValue(true);
+    // @ts-ignore - TypeScript error with mock return value
+    authManager.isMultiUserMode = jest.fn().mockReturnValue(true);
+    // @ts-ignore - TypeScript error with mock return value
+    authManager.getUserIdForSession = jest.fn().mockImplementation((sessionId: string) => {
+      if (sessionId === 'test-session-456') return 'test-user-123';
+      if (sessionId === 'test-session-789') return 'test-user-456';
+      return null;
+    });
 
     // Setup database manager mock
     // @ts-ignore - TypeScript error with mock return value
@@ -115,6 +149,8 @@ describe('ArchiveManager', () => {
     databaseManager.upsertEmailIndex = jest.fn().mockResolvedValue(true);
     // @ts-ignore - TypeScript error with mock return value
     databaseManager.createArchiveRecord = jest.fn().mockResolvedValue('archive1');
+    // @ts-ignore - TypeScript error with mock return value
+    databaseManager.execute = jest.fn().mockResolvedValue(true);
     // @ts-ignore - TypeScript error with mock implementation
     databaseManager.getEmailsByIds = jest.fn().mockImplementation(async (ids: string[]) => {
       return sampleEmails.filter(email => ids.includes(email.id));
@@ -133,6 +169,22 @@ describe('ArchiveManager', () => {
         stats: { totalArchived: 0, lastArchived: 0 }
       }
     ]);
+
+    // Setup user database manager factory mock
+    // @ts-ignore - TypeScript error with mock return value
+    userDbManagerFactory.getUserDatabaseManager = jest.fn().mockResolvedValue(databaseManager);
+    // @ts-ignore - TypeScript error with mock return value
+    userDbManagerFactory.initialize = jest.fn().mockResolvedValue(undefined);
+
+    // Setup file access control mock
+    // @ts-ignore - TypeScript error with mock return value
+    fileAccessControl.createFileMetadata = jest.fn().mockResolvedValue({
+      id: 'file-123',
+      file_path: 'test/path',
+      size_bytes: 1024
+    });
+    // @ts-ignore - TypeScript error with mock return value
+    fileAccessControl.auditLog = jest.fn().mockResolvedValue(undefined);
 
     // Setup formatter registry mock
     // @ts-ignore - TypeScript error with mock implementation
@@ -164,7 +216,7 @@ describe('ArchiveManager', () => {
     process.env.ARCHIVE_PATH = 'test-archives';
 
     // Create archive manager instance
-    archiveManager = new ArchiveManager(authManager, databaseManager, formatterRegistry);
+    archiveManager = new ArchiveManager(authManager, userDbManagerFactory, formatterRegistry, fileAccessControl);
   });
 
   afterEach(() => {
@@ -184,12 +236,15 @@ describe('ArchiveManager', () => {
       mockGmailClient.users.messages.batchModify.mockResolvedValueOnce({ data: {} });
 
       // Execute
-      const result = await archiveManager.archiveEmails(options);
+      const result = await archiveManager.archiveEmails(options, mockUserContext);
 
       // Verify
       expect(result.archived).toBe(2);
       expect(result.errors).toHaveLength(0);
-      expect(databaseManager.searchEmails).toHaveBeenCalledWith(expect.objectContaining({ archived: false }));
+      expect(databaseManager.searchEmails).toHaveBeenCalledWith(expect.objectContaining({
+        archived: false,
+        user_id: 'test-user-123'
+      }));
       expect(mockGmailClient.users.messages.batchModify).toHaveBeenCalledWith({
         userId: 'me',
         requestBody: {
@@ -199,6 +254,7 @@ describe('ArchiveManager', () => {
         }
       });
       expect(databaseManager.upsertEmailIndex).toHaveBeenCalledTimes(2);
+      expect(databaseManager.upsertEmailIndex).toHaveBeenCalledWith(expect.any(Object), 'test-user-123');
       expect(databaseManager.createArchiveRecord).toHaveBeenCalledWith(expect.objectContaining({
         emailIds: ['email1', 'email2'],
         method: 'gmail',
@@ -215,17 +271,21 @@ describe('ArchiveManager', () => {
       };
 
       // Execute
-      const result = await archiveManager.archiveEmails(options);
+      const result = await archiveManager.archiveEmails(options, mockUserContext);
 
       // Verify
       expect(result.archived).toBe(2);
       expect(result.errors).toHaveLength(0);
       expect(result.location).toBeDefined();
-      expect(databaseManager.searchEmails).toHaveBeenCalledWith(expect.objectContaining({ archived: false }));
+      expect(databaseManager.searchEmails).toHaveBeenCalledWith(expect.objectContaining({
+        archived: false,
+        user_id: 'test-user-123'
+      }));
       expect(formatterRegistry.getFormatter).toHaveBeenCalledWith('json');
       expect(mockJsonFormatter.formatEmails).toHaveBeenCalledWith(sampleEmails, expect.any(Object));
       expect(fs.writeFile).toHaveBeenCalled();
       expect(databaseManager.upsertEmailIndex).toHaveBeenCalledTimes(2);
+      expect(databaseManager.upsertEmailIndex).toHaveBeenCalledWith(expect.any(Object), 'test-user-123');
       expect(databaseManager.createArchiveRecord).toHaveBeenCalledWith(expect.objectContaining({
         emailIds: ['email1', 'email2'],
         method: 'export',
@@ -242,7 +302,7 @@ describe('ArchiveManager', () => {
       };
 
       // Execute
-      const result = await archiveManager.archiveEmails(options);
+      const result = await archiveManager.archiveEmails(options, mockUserContext);
 
       // Verify
       expect(result.archived).toBe(2);
@@ -264,7 +324,7 @@ describe('ArchiveManager', () => {
       mockGmailClient.users.messages.batchModify.mockRejectedValueOnce(new Error('Failed to archive batch'));
 
       // Execute
-      const result = await archiveManager.archiveEmails(options);
+      const result = await archiveManager.archiveEmails(options, mockUserContext);
 
       // Verify
       expect(result.archived).toBe(0);
@@ -289,7 +349,7 @@ describe('ArchiveManager', () => {
       );
 
       // Execute
-      const result = await archiveManager.archiveEmails(options);
+      const result = await archiveManager.archiveEmails(options, mockUserContext);
 
       // Verify
       expect(result.archived).toBe(0);
@@ -317,7 +377,7 @@ describe('ArchiveManager', () => {
       });
 
       // Execute
-      const result = await archiveManager.archiveEmails(options);
+      const result = await archiveManager.archiveEmails(options, mockUserContext);
 
       // Verify
       expect(result.archived).toBe(2); // Should still archive using the default formatter
@@ -338,13 +398,14 @@ describe('ArchiveManager', () => {
       };
 
       // Execute
-      await archiveManager.archiveEmails(options);
+      await archiveManager.archiveEmails(options, mockUserContext);
 
       // Verify
       expect(databaseManager.searchEmails).toHaveBeenCalledWith(expect.objectContaining({
         category: 'low',
         year: 2023,
-        archived: false
+        archived: false,
+        user_id: 'test-user-123'
       }));
       // The dateBefore field is dynamically calculated, so we don't check it exactly
       expect(databaseManager.searchEmails).toHaveBeenCalledWith(
@@ -356,25 +417,21 @@ describe('ArchiveManager', () => {
   });
 
   describe('restoreEmails', () => {
-    beforeEach(() => {
-      // Setup mock archived emails
+    test('should restore Gmail-archived emails successfully', async () => {
+      // Setup mock archived emails for this specific test
       const archivedEmails = sampleEmails.map(email => ({
         ...email,
         archived: true,
         archiveDate: new Date(),
+        user_id: 'test-user-123'
       }));
-      
-      // Email 1 archived via Gmail
-      archivedEmails[0].archiveLocation = 'ARCHIVED';
-      
-      // Email 2 archived via export
-      archivedEmails[1].archiveLocation = '/path/to/archive.json';
-      
-      // @ts-ignore - TypeScript error with mock return value
-      databaseManager.getEmailsByIds = jest.fn().mockResolvedValue(archivedEmails);
-    });
 
-    test('should restore Gmail-archived emails successfully', async () => {
+      // Email 1 archived via Gmail
+      archivedEmails[0].archiveLocation = 'GMAIL_ARCHIVED';
+
+      // @ts-ignore - TypeScript error with mock return value
+      databaseManager.getEmailsByIds = jest.fn().mockResolvedValue(archivedEmails.filter(e => e.id === 'email1'));
+
       // Setup
       const options = {
         emailIds: ['email1'],
@@ -384,17 +441,8 @@ describe('ArchiveManager', () => {
       // Mock Gmail API response
       // @ts-ignore - TypeScript error with mock return value
       mockGmailClient.users.messages.batchModify.mockResolvedValueOnce({ data: {} });
-
-      databaseManager.getEmailsByIds.mockResolvedValueOnce([
-        {
-          id: 'email1',
-          archived: true,
-          archiveDate: new Date(),
-          archiveLocation: 'ARCHIVED'
-        }
-      ]);
       // Execute
-      const result = await archiveManager.restoreEmails(options);
+      const result = await archiveManager.restoreEmails(options, mockUserContext);
 
       // Verify
       expect(result.restored).toBe(1);
@@ -414,7 +462,7 @@ describe('ArchiveManager', () => {
         archiveDate: undefined,
         archiveLocation: undefined,
         labels: expect.arrayContaining(['INBOX', 'RESTORED'])
-      }));
+      }), 'test-user-123');
     });
 
     test("should restore exported emails from  archived file successfully", async () => {
@@ -431,10 +479,11 @@ describe('ArchiveManager', () => {
           id: 'email2',
           archived: true,
           archiveDate: new Date(),
-          archiveLocation: '/path/to/archive.json'
+          archiveLocation: '/path/to/archive.json',
+          user_id: 'test-user-123'
         }
       ]);
-      const result = await archiveManager.restoreEmails(options);
+      const result = await archiveManager.restoreEmails(options, mockUserContext);
       // Verify
       expect(result.restored).toBe(1);
       expect(result.errors).toHaveLength(0);
@@ -460,10 +509,11 @@ describe('ArchiveManager', () => {
           id: 'email2',
           archived: true,
           archiveDate: new Date(),
-          archiveLocation: 'ARCHIVED'
+          archiveLocation: 'GMAIL_ARCHIVED',
+          user_id: 'test-user-123'
         }
       ]);
-      const result = await archiveManager.restoreEmails(options);
+      const result = await archiveManager.restoreEmails(options, mockUserContext);
 
       // Verify
       expect(result.restored).toBe(1);
@@ -482,7 +532,7 @@ describe('ArchiveManager', () => {
         archived: false,
         archiveDate: undefined,
         archiveLocation: undefined
-      }));
+      }), 'test-user-123');
     });
 
     test('should return error when no archived emails found', async () => {
@@ -496,7 +546,7 @@ describe('ArchiveManager', () => {
       databaseManager.getEmailsByIds = jest.fn().mockResolvedValue([]);
 
       // Execute
-      const result = await archiveManager.restoreEmails(options);
+      const result = await archiveManager.restoreEmails(options, mockUserContext);
 
       // Verify
       expect(result.restored).toBe(0);
@@ -526,12 +576,13 @@ describe('ArchiveManager', () => {
           id: 'email1',
           archived: true,
           archiveDate: new Date(),
-          archiveLocation: 'ARCHIVED'
+          archiveLocation: 'GMAIL_ARCHIVED',
+          user_id: 'test-user-123'
         }
       ]);
       
       // Execute
-      const result = await archiveManager.restoreEmails(options);
+      const result = await archiveManager.restoreEmails(options, mockUserContext);
 
       // Verify
       expect(result.restored).toBe(0);
@@ -552,11 +603,12 @@ describe('ArchiveManager', () => {
         ...sampleEmails[1],
         archived: true,
         archiveDate: new Date(),
-        archiveLocation: undefined
+        archiveLocation: undefined,
+        user_id: 'test-user-123'
       }]);
 
       // Execute
-      const result = await archiveManager.restoreEmails(options);
+      const result = await archiveManager.restoreEmails(options,mockUserContext);
 
       // Verify
       expect(result.restored).toBe(0);
@@ -583,21 +635,22 @@ describe('ArchiveManager', () => {
         archived: true,
         archiveDate: new Date(),
         archiveLocation: 'ARCHIVED',
-        labels: ['INBOX']
+        labels: ['INBOX'],
+        user_id: 'test-user-123'
       }]);
 
       // Mock Gmail API response with success
       mockGmailClient.users.messages.batchModify.mockResolvedValue({ data: {} });
 
       // Execute
-      const result = await archiveManager.restoreEmails(options);
+      const result = await archiveManager.restoreEmails(options, mockUserContext);
 
       // Verify
       expect(result.restored).toBe(1);
       expect(databaseManager.upsertEmailIndex).toHaveBeenCalledWith(expect.objectContaining({
         id: 'email1',
         labels: expect.arrayContaining(['INBOX', 'RESTORED'])
-      }));
+      }), 'test-user-123');
     });
   });
 
@@ -611,13 +664,16 @@ describe('ArchiveManager', () => {
       };
 
       // Execute
-      const result = await archiveManager.exportEmails(options);
+      const result = await archiveManager.exportEmails(options, mockUserContext);
 
       // Verify
       expect(result.exported).toBe(2);
       expect(result.file_path).toBeDefined();
       expect(result.size).toBe(1024);
-      expect(databaseManager.searchEmails).toHaveBeenCalledWith({ year: 2023 });
+      expect(databaseManager.searchEmails).toHaveBeenCalledWith({
+        year: 2023,
+        user_id: 'test-user-123'
+      });
       expect(formatterRegistry.getFormatter).toHaveBeenCalledWith('json');
       expect(mockJsonFormatter.formatEmails).toHaveBeenCalled();
       expect(fs.writeFile).toHaveBeenCalled();
@@ -633,7 +689,7 @@ describe('ArchiveManager', () => {
       };
 
       // Execute
-      const result = await archiveManager.exportEmails(options);
+      const result = await archiveManager.exportEmails(options, mockUserContext);
 
       // Verify
       expect(result.exported).toBe(2);
@@ -657,7 +713,7 @@ describe('ArchiveManager', () => {
       mockJsonFormatter.formatEmails.mockRejectedValueOnce(new Error('Format error'));
 
       // Execute
-      const result = await archiveManager.exportEmails(options);
+      const result = await archiveManager.exportEmails(options, mockUserContext);
 
       // Verify
       expect(result.exported).toBe(0);
@@ -676,7 +732,7 @@ describe('ArchiveManager', () => {
       };
 
       // Execute
-      const result = await archiveManager.createRule(rule);
+      const result = await archiveManager.createRule(rule, mockUserContext);
 
       // Verify
       expect(result.rule_id).toBe('rule1');
@@ -691,21 +747,21 @@ describe('ArchiveManager', () => {
 
     test('should list archive rules', async () => {
       // Execute
-      const result = await archiveManager.listRules({ activeOnly: true });
+      const result = await archiveManager.listRules({ activeOnly: true }, mockUserContext);
 
       // Verify
       expect(result.rules).toHaveLength(1);
       expect(result.rules[0].id).toBe('rule1');
-      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true);
+      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true, 'test-user-123');
     });
 
     test('should run scheduled rules', async () => {
-      // We don't need to mock private methods; instead we'll just verify the public interface
-      // Execute the method and check that the expected database methods were called
-      await archiveManager.runScheduledRules();
-      
-      // Verify that rules were fetched
-      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true);
+      // System-wide scheduled rules are now disabled in multi-user mode
+      // Test with user context instead
+      await archiveManager.runScheduledRules(mockUserContext);
+
+      // Verify that rules were fetched for the specific user
+      expect(databaseManager.getArchiveRules).toHaveBeenCalledWith(true, 'test-user-123');
     });
   });
 });

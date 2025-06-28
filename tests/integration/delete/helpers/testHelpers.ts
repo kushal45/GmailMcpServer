@@ -8,6 +8,16 @@ import fs from 'fs/promises';
 import path from 'path';
 
 import { Logger } from 'winston';
+import { DatabaseRegistry } from '../../../../src/database/DatabaseRegistry';
+import { UserDatabaseManagerFactory } from '../../../../src/database/UserDatabaseManagerFactory.js';
+
+// Suppress all console output in test/CI unless SHOW_LOGS is set
+const isTestEnv = process.env.NODE_ENV === 'test' || process.env.CI === 'true';
+if (isTestEnv && !process.env.SHOW_LOGS) {
+  console.log = () => {};
+  console.warn = () => {};
+  console.error = () => {};
+}
 
 // Mock Gmail client type
 export type MockGmailClient = {
@@ -46,57 +56,101 @@ export function createMockGmailClient(): MockGmailClient {
 
 // Create mock AuthManager
 export function createMockAuthManager(gmailClient: MockGmailClient): any {
+  console.log('🔍 DIAGNOSTIC: Creating enhanced mock auth manager');
+  let isTokenExpired = false;
+  let isNetworkError = false;
+  let isRateLimited = false;
+  let isRevoked = false;
+  let scopes: string[] = ['https://www.googleapis.com/auth/gmail.modify'];
+
   const mockAuthManager = {
-    getGmailClient: jest.fn(() => Promise.resolve(gmailClient)),
+    getGmailClient: jest.fn(async (sessionId?: string) => {
+      if (isNetworkError) {
+        throw new Error('Network error');
+      }
+      if (isRateLimited) {
+        throw new Error('Rate limit exceeded');
+      }
+      if (isRevoked) {
+        throw new Error('Token revoked');
+      }
+      if (isTokenExpired) {
+        throw new Error('Token expired');
+      }
+      if (!scopes.includes('https://www.googleapis.com/auth/gmail.modify')) {
+        throw new Error('Insufficient OAuth scope for delete operations');
+      }
+      return Promise.resolve(gmailClient);
+    }),
     isAuthenticated: jest.fn(() => Promise.resolve(true)),
+    hasValidAuth: jest.fn(async (sessionId: string) => {
+      return !isTokenExpired && !isRevoked && !isNetworkError && !isRateLimited;
+    }),
+    refreshToken: jest.fn(async (sessionId: string) => {
+      isTokenExpired = false;
+      isRevoked = false;
+      return { access_token: 'refreshed-token' };
+    }),
     authenticate: jest.fn(() => Promise.resolve(undefined)),
     getStoredCredentials: jest.fn(() => Promise.resolve({})),
     storeCredentials: jest.fn(() => Promise.resolve(undefined)),
-    revokeCredentials: jest.fn(() => Promise.resolve(undefined))
+    revokeCredentials: jest.fn(() => Promise.resolve(undefined)),
+    // Test helpers to simulate error conditions
+    _setTokenExpired: (expired: boolean) => {
+      isTokenExpired = expired;
+    },
+    _setNetworkError: (val: boolean) => {
+      isNetworkError = val;
+    },
+    _setRateLimited: (val: boolean) => {
+      isRateLimited = val;
+    },
+    _setRevoked: (val: boolean) => {
+      isRevoked = val;
+    },
+    _setScopes: (newScopes: string[]) => {
+      scopes = newScopes;
+    },
   };
 
+  console.log('🔍 DIAGNOSTIC: Enhanced mock auth manager created with methods:', Object.keys(mockAuthManager));
   return mockAuthManager;
 }
 
-// Test database path
-let testDbPath: string;
-let testDbDir: string;
-
 // Create real DatabaseManager for testing
-export async function createTestDatabaseManager(): Promise<DatabaseManager> {
-  const dataPath = `../data/${randomUUID()}-gmail-test`;
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-    // Step 1: Resolve the absolute path *before* creation
-    // This is generally the safest way to ensure you're working with the canonical path. and ra
-  testDbDir = path.resolve(__dirname, dataPath);
-  testDbPath = path.join(testDbDir, 'test-emails.db');
-  
-  // Reset the singleton instance to force creation of a new one with the new path
-  // This is necessary because the singleton pattern locks in the database path at creation time
-  (DatabaseManager as any).instance = null;
-  
-  // Set the storage path environment variable to our test directory
+export async function createTestDatabaseManager(userId:string): Promise<{ dbManager: UserDatabaseManagerFactory, testDbDir: string }> {
+  const dataPath = `tests/integration/delete/data/${userId}-gmail-test`;
+  const testDbDir = path.resolve(process.cwd(), dataPath);
   process.env.STORAGE_PATH = testDbDir;
-  
-  const dbManager = DatabaseManager.getInstance();
+  // Reset all relevant singletons to ensure correct STORAGE_PATH is used
+  DatabaseRegistry.resetInstance();
+  UserDatabaseManagerFactory.resetInstance();
+  (DatabaseManager as any).instance = null;
+  console.log('[DIAGNOSTIC] createTestDatabaseManager:', {
+    userId,
+    testDbDir,
+    storagePathEnv: process.env.STORAGE_PATH,
+    expectedDbPath: `${testDbDir}/db/user_${userId}_gmail-mcp.db`
+  });
+  const dbManager = UserDatabaseManagerFactory.getInstance();
   await dbManager.initialize();
-  
-  return dbManager;
+  return { dbManager, testDbDir };
 }
 
-
-export function fetchCleanupEngine(newDbManager: DatabaseManager,moockAuthManager:any, jobQueue:JobQueue): {
+export async function fetchCleanupEngine(dbManagerFactory: UserDatabaseManagerFactory, moockAuthManager: any, jobQueue: JobQueue): Promise<{
   accessTracker: AccessPatternTracker;
   stalenessScorer: StalenessScorer;
   policyEngine: CleanupPolicyEngine;
   healthMonitor: SystemHealthMonitor;
   deleteManager: DeleteManager;
   cleanupEngine: CleanupAutomationEngine;
-} {
+}> {
+  // Always get a per-user DatabaseManager for test user
+  const testUserId = 'test-user-123';
+  const newDbManager = await dbManagerFactory.getUserDatabaseManager(testUserId);
   const accessTracker = new AccessPatternTracker(newDbManager);
   const stalenessScorer = new StalenessScorer(accessTracker);
-  stalenessScorer.customMeta="kushal";
+  stalenessScorer.customMeta = "kushal";
   
   // VERY permissive safety config for testing - allow deletions
   const testSafetyConfig = {
@@ -159,8 +213,8 @@ export function fetchCleanupEngine(newDbManager: DatabaseManager,moockAuthManage
   
   const policyEngine = new CleanupPolicyEngine(newDbManager, stalenessScorer, accessTracker, testSafetyConfig);
   const healthMonitor = new SystemHealthMonitor(newDbManager);
-  healthMonitor.metaData="kushal";
-  const deleteManager = new DeleteManager(moockAuthManager, newDbManager);
+  healthMonitor.metaData = "kushal";
+  const deleteManager = new DeleteManager(moockAuthManager, dbManagerFactory);
   const cleanupEngine = new CleanupAutomationEngine(
     newDbManager,
     jobQueue,
@@ -169,22 +223,24 @@ export function fetchCleanupEngine(newDbManager: DatabaseManager,moockAuthManage
     stalenessScorer,
     policyEngine
   );
-  cleanupEngine.hMonitor=healthMonitor;
+  cleanupEngine.hMonitor = healthMonitor;
 
-  return{
+  return {
     accessTracker,
     stalenessScorer,
     policyEngine,
     healthMonitor,
     deleteManager,
     cleanupEngine
-  }
+  };
 }
+
 // Cleanup test database
-export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<void> {
+export async function cleanupTestDatabase(dbManager: DatabaseManager, testDbDir: string): Promise<void> {
+  // Defensive: ensure DB is initialized before use
+  await dbManager.initialize();
   if (dbManager) {
     try {
-      // Clear cleanup policies using public methods
       const allPolicies = await dbManager.getAllPolicies();
       for (const policy of allPolicies) {
         await dbManager.deleteCleanupPolicy(policy.id);
@@ -192,54 +248,35 @@ export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<v
       console.log('🧹 Cleared cleanup_policies table');
     } catch (error) {
       console.warn('Warning: Failed to clear cleanup policies:', error);
-      // Continue with normal cleanup even if table clearing fails
     }
-    
     await dbManager.close();
   }
-  
-  // Reset the singleton instance to ensure complete cleanup
   (DatabaseManager as any).instance = null;
-  
-  // Remove test database directory
- if (testDbDir) {
-    const resolvedTestDbDir = path.resolve(testDbDir); // Get absolute path for clarity
+  if (testDbDir) {
+    const resolvedTestDbDir = path.resolve(testDbDir);
     console.log(`Attempting to remove directory: ${resolvedTestDbDir}`);
-
     try {
-      // **Crucial: Add more detailed logging and inspect the error object**
       await fs.rm(resolvedTestDbDir, { recursive: true, force: true });
       console.log(`Successfully removed test database directory: ${resolvedTestDbDir}`);
-    } catch (error: any) { // Use 'any' for error type if not strictly typed
+    } catch (error: any) {
       console.error('Failed to cleanup test database directory:', resolvedTestDbDir);
       console.error('Error details:', {
         name: error.name,
         message: error.message,
-        code: error.code, // EACCES, EPERM, ENOENT, etc.
+        code: error.code,
         syscall: error.syscall,
         path: error.path,
         stack: error.stack
       });
-      // Important: if ENOENT (no such file or directory) is thrown, it means it didn't exist,
-      // which for cleanup purposes often means it's 'cleaned'. You might choose to ignore ENOENT.
       if (error.code === 'ENOENT') {
-          console.warn(`Directory ${resolvedTestDbDir} already did not exist. Considering it cleaned.`);
+        console.warn(`Directory ${resolvedTestDbDir} already did not exist. Considering it cleaned.`);
       }
     }
   } else {
     console.warn('testDbDir is not set, skipping directory removal.');
   }
-
 }
 
-export async function resetDatabase(dbManager: DatabaseManager,emails: EmailIndex[]): Promise<DatabaseManager> {
-  if (dbManager) {
-     await cleanupTestDatabase(dbManager);
-     dbManager=await createTestDatabaseManager();
-     await seedTestData(dbManager,emails);
-  }
-  return dbManager;
-}
 // Reset singleton instances to ensure test isolation
 export function resetSingletonInstances(): void {
   // Reset DatabaseManager singleton
@@ -265,7 +302,9 @@ export function resetSingletonInstances(): void {
 }
 
 // Seed test data into database
-export async function seedTestData(dbManager: DatabaseManager, emails: EmailIndex[]): Promise<void> {
+export async function seedTestData(dbManager: DatabaseManager, emails: EmailIndex[], userId?: string): Promise<void> {
+  // Defensive: ensure DB is initialized before use
+  await dbManager.initialize();
   console.log('🔍 DIAGNOSTIC: seedTestData called', {
     email_count: emails.length,
     sample_emails: emails.slice(0, 3).map(e => ({
@@ -277,11 +316,11 @@ export async function seedTestData(dbManager: DatabaseManager, emails: EmailInde
       archived: e.archived
     }))
   });
-  
+  // Set user_id on all emails if provided
+  const emailsWithUserId = emails.map(e => ({ ...e, user_id: userId || e.user_id || 'test-user-123' }));
   // Use bulk insert for efficiency
-  if (emails.length > 0) {
-    await dbManager.bulkUpsertEmailIndex(emails);
-    
+  if (emailsWithUserId.length > 0) {
+    await dbManager.bulkUpsertEmailIndex(emailsWithUserId);
     // Verify the emails were actually inserted
     const verifyQuery = await dbManager.searchEmails({});
     console.log('🔍 DIAGNOSTIC: After seeding verification', {
@@ -292,7 +331,8 @@ export async function seedTestData(dbManager: DatabaseManager, emails: EmailInde
         date: e.date?.toISOString(),
         spam_score: e.spam_score,
         promotional_score: e.promotional_score,
-        archived: e.archived
+        archived: e.archived,
+        user_id: e.user_id
       }))
     });
   }
@@ -303,6 +343,8 @@ export async function verifyDatabaseState(
   dbManager: DatabaseManager,
   expectedEmails: EmailIndex[]
 ): Promise<void> {
+  // Defensive: ensure DB is initialized before use
+  await dbManager.initialize();
   const allEmails = await dbManager.searchEmails({});
   
   // Create a map for easy lookup
@@ -323,6 +365,8 @@ export async function getEmailsFromDatabase(
   dbManager: DatabaseManager,
   emailIds: string[]
 ): Promise<EmailIndex[]> {
+  // Defensive: ensure DB is initialized before use
+  await dbManager.initialize();
   const emails: EmailIndex[] = [];
   for (const id of emailIds) {
     const email = await dbManager.getEmailIndex(id);
@@ -351,33 +395,36 @@ export function createMockDatabaseManager(): MockDatabaseManager {
 
 // Create DeleteManager with real database
 export async function createDeleteManagerWithRealDb(
-  authManager?: any
+  authManager?: any,
+  userId?: string
 ): Promise<{
   deleteManager: DeleteManager;
   mockGmailClient: MockGmailClient;
   mockAuthManager: any;
-  dbManager: DatabaseManager;
+  dbManagerFactory: UserDatabaseManagerFactory;
+  testDbDir: string;
 }> {
   const mockGmailClient = createMockGmailClient();
   const mockAuthManager = authManager || createMockAuthManager(mockGmailClient);
-  
   // Ensure we get a fresh database instance for each test
-  const dbManager = await createTestDatabaseManager();
+  const { dbManager: dbManagerFactory, testDbDir } = await createTestDatabaseManager(userId || 'test-user-123');
 
   const deleteManager = new DeleteManager(
     mockAuthManager as unknown as AuthManager,
-    dbManager
+    dbManagerFactory
   );
 
   return {
     deleteManager,
     mockGmailClient,
     mockAuthManager,
-    dbManager
+    dbManagerFactory,
+    testDbDir
   };
 }
 
 // Create DeleteManager with mocks (kept for backward compatibility)
+// NOTE: This function is only for mock-based unit tests, not for integration tests with real DBs.
 export function createDeleteManager(
   authManager?: any,
   databaseManager?: any
@@ -391,9 +438,10 @@ export function createDeleteManager(
   const mockAuthManager = authManager || createMockAuthManager(mockGmailClient);
   const mockDbManager = databaseManager || createMockDatabaseManager();
 
+  // Only use for unit tests with mocks
   const deleteManager = new DeleteManager(
     mockAuthManager as unknown as AuthManager,
-    mockDbManager as unknown as DatabaseManager
+    mockDbManager as unknown as any // Intentionally bypass type for mock
   );
 
   return {
@@ -486,6 +534,10 @@ export function verifyBatchModifyCalls(
     removeLabelIds?: string[];
   }>
 ) {
+  console.log('DIAGNOSTIC: verifyBatchModifyCalls called', {
+    expectedCalls: expectedCalls.length,
+    mockGmailClient: mockGmailClient.users.messages.batchModify.mock.calls
+  });
   expect(mockGmailClient.users.messages.batchModify).toHaveBeenCalledTimes(expectedCalls.length);
   
   expectedCalls.forEach((expectedCall, index) => {
@@ -537,6 +589,8 @@ export async function verifyRealDatabaseSearch(
   criteria: any,
   expectedCount: number
 ): Promise<EmailIndex[]> {
+  // Defensive: ensure DB is initialized before use
+  await dbManager.initialize();
   const results = await dbManager.searchEmails(criteria);
   expect(results.length).toBe(expectedCount);
   return results;
@@ -547,6 +601,8 @@ export async function markEmailsAsDeleted(
   dbManager: DatabaseManager,
   emailIds: string[]
 ): Promise<void> {
+  // Defensive: ensure DB is initialized before use
+  await dbManager.initialize();
   for (const id of emailIds) {
     const email = await dbManager.getEmailIndex(id);
     if (email) {
@@ -573,8 +629,6 @@ export const testErrors = {
 export function waitForAsync(ms: number = 0): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-
-
 
 interface CapturedConsoleOutput {
   logs: string[];
@@ -654,6 +708,8 @@ export function stopLoggerCapture() {
 
 // Helper to create a delay promise
 export function delay(ms: number): Promise<void> {
+  const isTest = process.env.NODE_ENV === 'test' || process.env.CI === 'true';
+  if (isTest) return Promise.resolve();
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
@@ -688,6 +744,8 @@ export function resetAllMocks(
   mockAuthManager: any,
   mockDbManager?: MockDatabaseManager
 ) {
+  console.log('🔍 DIAGNOSTIC: Resetting mocks. AuthManager methods before reset:', Object.keys(mockAuthManager));
+  
   // Reset Gmail client mocks
   mockGmailClient.users.messages.batchModify.mockReset();
   mockGmailClient.users.messages.list.mockReset();
@@ -698,6 +756,21 @@ export function resetAllMocks(
   if (mockAuthManager.isAuthenticated) {
     mockAuthManager.isAuthenticated.mockReset();
   }
+  
+  // Reset enhanced OAuth methods if they exist
+  const enhancedOAuthMethods = [
+    'getAuthUrl', 'hasValidAuth', 'refreshToken', 'createUserSession',
+    'getUserIdForSession', 'getSessionId', 'authenticateUser', 'invalidateSession',
+    'getAllUsers', 'getUserById', 'getUserByEmail', 'getClient', 'getClientForSession',
+    'isMultiUserMode', 'enableMultiUserMode', 'cleanup'
+  ];
+  
+  enhancedOAuthMethods.forEach(methodName => {
+    if (mockAuthManager[methodName] && typeof mockAuthManager[methodName].mockReset === 'function') {
+      console.log(`🔍 DIAGNOSTIC: Resetting enhanced OAuth method: ${methodName}`);
+      mockAuthManager[methodName].mockReset();
+    }
+  });
   
   // Reset Database manager mocks if provided (for mock tests)
   if (mockDbManager) {
@@ -724,22 +797,20 @@ export function resetAllMocks(
 }
 
 // Helper to reset test database
-export async function resetTestDatabase(dbManager: DatabaseManager, emails: EmailIndex[]): Promise<DatabaseManager> {
+export async function resetTestDatabase(dbManagerFactory: UserDatabaseManagerFactory, emails: EmailIndex[]): Promise<UserDatabaseManagerFactory> {
   // Clear all existing data by closing and reinitializing
-  await cleanupTestDatabase(dbManager);
-  await dbManager.close();
-  // Reset singleton to get a fresh instance with proper isolation
-  (DatabaseManager as any).instance = null;
-  
-  // Create new instance
-  const newDbManager = await createTestDatabaseManager();
-  
-  // Re-seed with fresh data
-  if (emails.length > 0) {
-    await seedTestData(newDbManager, emails);
+  const { dbManager: freshDbManagerFactory, testDbDir } = await createTestDatabaseManager('test-user-123');
+  // For each user in emails, cleanup and re-seed
+  const userIds = Array.from(new Set(emails.map(e => e.user_id || 'test-user-123')));
+  for (const userId of userIds) {
+    const dbManager = await dbManagerFactory.getUserDatabaseManager(userId);
+    await cleanupTestDatabase(dbManager, testDbDir);
+    const userEmails = emails.filter(e => (e.user_id || 'test-user-123') === userId);
+    if (userEmails.length > 0) {
+      await seedTestData(dbManager, userEmails, userId);
+    }
   }
-  
-  return newDbManager;
+  return freshDbManagerFactory;
 }
 
 // ========================
@@ -758,6 +829,7 @@ import { CleanupAutomationEngine } from '../../../../src/cleanup/CleanupAutomati
 import { JobQueue } from '../../../../src/database/JobQueue.js';
 import { gmail } from 'googleapis/build/src/apis/gmail/index.js';
 import { randomUUID } from 'crypto';
+import { UserDatabaseInitializer } from '../../../../src/database/UserDatabaseInitializer.js';
 
 // Create mock cleanup policy with more realistic defaults
 export function createMockCleanupPolicy(overrides?: Partial<CleanupPolicy>): CleanupPolicy {
@@ -1101,7 +1173,41 @@ export function createCleanupEvaluationResults(emails: EmailIndex[]): any {
 
 // Helper to wait for batch operations to complete
 export async function waitForBatchCompletion(ms: number = 200): Promise<void> {
+  const isTest = process.env.NODE_ENV === 'test' || process.env.CI === 'true';
+  if (isTest) return;
   await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Sets up OAuth error conditions for testing
+ * @param mockAuthManager The mock auth manager instance
+ * @param condition The error condition to simulate
+ * @param value Whether to enable or disable the condition
+ */
+export function setupOAuthErrorCondition(
+  mockAuthManager: any,
+  condition: 'expired' | 'revoked' | 'networkError' | 'rateLimited' | 'insufficientScopes',
+  value: boolean = true
+): void {
+  if (!mockAuthManager) return;
+  
+  switch (condition) {
+    case 'expired':
+      mockAuthManager._setTokenExpired?.(value);
+      break;
+    case 'revoked':
+      mockAuthManager._setRevoked?.(value);
+      break;
+    case 'networkError':
+      mockAuthManager._setNetworkError?.(value);
+      break;
+    case 'rateLimited':
+      mockAuthManager._setRateLimited?.(value);
+      break;
+    case 'insufficientScopes':
+      mockAuthManager._setScopes?.(value ? ['https://www.googleapis.com/auth/gmail.readonly'] : ['https://www.googleapis.com/auth/gmail.modify']);
+      break;
+  }
 }
 
 // Helper to create performance test scenario

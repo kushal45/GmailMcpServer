@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "firecrawl": {
+      "command": "npx",
+      "args": ["-y", "@firecrawl/mcp-server"],
+      "env": {
+        "FIRECRAWL_API_KEY": "fc-d133ca1f8bf4472f87c5d72774f8e9ca"
+      }
+    },
+    "magic": {
+      "command": "npx",
+      "args": ["-y", "@21st/magic-mcp"],
+      "env": {
+        "OPENAI_API_KEY": "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"
+      }
+    },
+    "duckduckgo": {
+      "command": "npx",
+      "args": ["-y", "duckduckgo-mcp-server"]
+    },
+    "brave-search": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "BRAVE_API_KEY", "mcp/brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "BSAo-B0D0-_lQrO4-ZG8_EerHYuKLdW"
+      }
+    }
+  }
+}

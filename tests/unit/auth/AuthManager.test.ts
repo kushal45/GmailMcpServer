@@ -237,7 +237,9 @@ describe("AuthManager", () => {
       );
       // Prevent the test from starting a real server by replacing startAuthServer with a resolved Promise
       (authManager as any).startAuthServer = () => Promise.resolve();
-      await authManager.getAuthUrl(additionalScopes);
+      await authManager.getAuthUrl({
+        additionalScopes
+      });
       expect(mockOAuth2Client.generateAuthUrl).toHaveBeenCalledWith({
         access_type: "offline",
         scope: expect.arrayContaining([

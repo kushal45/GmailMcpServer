@@ -31,8 +31,7 @@ export class ImportanceAnalyzer implements IImportanceAnalyzer {
   ) {
     this.config = config;
     this.cacheManager = cacheManager;
-    this.databaseManager = databaseManager;
-    
+    this.databaseManager = databaseManager;   
     // Initialize default rules from config
     this.initializeRules();
   }
@@ -421,7 +420,7 @@ export class ImportanceAnalyzer implements IImportanceAnalyzer {
   private generateContextHash(context: EmailAnalysisContext): string {
     if (this.config.caching.keyStrategy === 'partial') {
       // Use only key fields for caching
-      return `importance:${context.email.id}:${context.subject}:${context.sender}`;
+      return `importance:${context?.userId}:${context.email.id}:${context.subject}:${context.sender}`;
     } else {
       // Use full context for caching
       const contextStr = JSON.stringify({
@@ -433,7 +432,7 @@ export class ImportanceAnalyzer implements IImportanceAnalyzer {
         size: context.size,
         hasAttachments: context.hasAttachments
       });
-      return `importance:${Buffer.from(contextStr).toString('base64')}`;
+      return `importance:${context?.userId}:${Buffer.from(contextStr).toString('base64')}`;
     }
   }
 
@@ -461,7 +460,7 @@ export class ImportanceAnalyzer implements IImportanceAnalyzer {
     if (!this.cacheManager) return;
     
     try {
-      this.cacheManager.set(contextHash, result, 300); // Cache for 5 minutes
+      this.cacheManager.set(contextHash, result, "300"); // Cache for 5 minutes
     } catch (error) {
       logger.error('ImportanceAnalyzer: Cache storage failed', { 
         contextHash, 

@@ -45,7 +45,7 @@ if (filterIndex !== -1 && args[filterIndex + 1]) {
 const jestArgs = [
   'jest',
   'tests/integration/delete/DeleteManager.integration.test.ts',
-  '--config', 'jest.config.cjs'
+  '--config', 'jest.config.js'
 ];
 
 // Add options

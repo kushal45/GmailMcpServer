@@ -1,11 +1,12 @@
 import { DatabaseManager } from '../database/DatabaseManager.js';
+import { UserDatabaseManagerFactory } from '../database/UserDatabaseManagerFactory.js';
 import { AuthManager } from '../auth/AuthManager.js';
 import { CacheManager } from '../cache/CacheManager.js';
-import { EmailIndex, ListEmailsOptions, PriorityCategory, Header} from '../types/index.js';
+import { EmailIndex, ListEmailsOptions, PriorityCategory, Header, SearchCriteria, SearchEngineCriteria} from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 export class EmailFetcher {
-  private databaseManager: DatabaseManager;
+  private userDbManagerFactory: UserDatabaseManagerFactory;
   private authManager: AuthManager;
   private cacheManager: CacheManager;
   
@@ -16,34 +17,52 @@ export class EmailFetcher {
   private readonly BATCH_SIZE = 50;
 
   constructor(
-    databaseManager: DatabaseManager,
+    userDbManagerFactory: UserDatabaseManagerFactory,
     authManager: AuthManager,
     cacheManager: CacheManager
   ) {
-    this.databaseManager = databaseManager;
+    this.userDbManagerFactory = userDbManagerFactory;
     this.authManager = authManager;
     this.cacheManager = cacheManager;
+  }
+
+  /**
+   * Get user-specific database manager
+   * @param userId User ID to get database manager for
+   */
+  private async getUserDatabaseManager(userId: string): Promise<DatabaseManager> {
+    if (!userId) {
+      throw new Error('User ID is required for database operations');
+    }
+    return this.userDbManagerFactory.getUserDatabaseManager(userId);
   }
 
   /**
    * List emails based on provided filters
    * Implements the flow from the sequence diagram
    */
-  async listEmails(options: ListEmailsOptions): Promise<{
+  async listEmails(options: ListEmailsOptions, userId: string): Promise<{
     emails: EmailIndex[];
     total: number;
   }> {
+    if (!userId) {
+      throw new Error('User ID is required for listing emails');
+    }
+
     logger.info('Listing emails with options:', options);
-    
+
     try {
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userId);
+
       // Step 1: Query local cache DB for email metadata
-      const cacheKey = this.generateCacheKey(options);
+      const cacheKey = this.generateCacheKey(options, userId);
       const cachedResult = this.cacheManager.get<{
         emails: EmailIndex[];
         total: number;
         timestamp: number;
-      }>(cacheKey);
-      
+      }>(cacheKey, userId);
+
       // If we have fresh cached results, return them
       if (cachedResult && Date.now() - cachedResult.timestamp < this.CACHE_TTL * 1000) {
         logger.info(`Returning ${cachedResult.emails.length} emails from cache`);
@@ -54,13 +73,14 @@ export class EmailFetcher {
       }
       
       // Step 2: Query database for matching emails
-      const searchCriteria: any = {
+      const searchCriteria: SearchEngineCriteria = {
         category: options.category,
         year: options.year,
         sizeRange: options.sizeRange,
         archived: options.archived,
         limit: options.limit,
-        offset: options.offset
+        offset: options.offset,
+        user_id: userId
       };
       
       // Add additional search criteria if provided
@@ -72,50 +92,61 @@ export class EmailFetcher {
         searchCriteria.labels = options.labels;
       }
       
-      const emails = await this.databaseManager.searchEmails(searchCriteria);
-      
-      // Get total count without pagination
-      const countCriteria = { ...searchCriteria };
-      delete countCriteria.limit;
-      delete countCriteria.offset;
-      const total = await this.databaseManager.getEmailCount(countCriteria);
-      
+      let emails: EmailIndex[];
+      let total: number;
+      try {
+        emails = await databaseManager.searchEmails(searchCriteria);
+        // Get total count without pagination
+        const countCriteria = { ...searchCriteria };
+        delete countCriteria.limit;
+        delete countCriteria.offset;
+        total = await databaseManager.getEmailCount(countCriteria);
+      } catch (dbError) {
+        logger.error('Database error in listEmails:', dbError);
+        throw dbError;
+      }
+
       // Step 3: Check if we need to fetch from Gmail API
       const needsSync = this.needsSynchronization(emails, options);
-      
+
       if (needsSync) {
-        // Step 4: Apply incremental synchronization logic
-        await this.synchronizeWithGmail(options);
-        
+        try {
+          // Step 4: Apply incremental synchronization logic
+          await this.synchronizeWithGmail(options, userId);
+        } catch (syncError) {
+          // [FIX] Propagate infrastructure/auth errors, do not return empty results
+          logger.error('Error during Gmail synchronization:', syncError);
+          throw syncError;
+        }
         // Step 5: Re-query database after synchronization
-        const refreshedEmails = await this.databaseManager.searchEmails(searchCriteria);
-        const refreshedTotal = await this.databaseManager.getEmailCount(countCriteria);
-        
+        emails = await databaseManager.searchEmails(searchCriteria);
+        const countCriteria = { ...searchCriteria };
+        delete countCriteria.limit;
+        delete countCriteria.offset;
+        total = await databaseManager.getEmailCount(countCriteria);
         // Step 6: Cache the results
         this.cacheManager.set(cacheKey, {
-          emails: refreshedEmails,
-          total: refreshedTotal,
+          emails,
+          total,
           timestamp: Date.now()
-        }, this.CACHE_TTL);
-        
-        logger.info(`Returning ${refreshedEmails.length} emails after synchronization`);
+        }, userId);
+        logger.info(`Returning ${emails.length} emails after synchronization`);
         return {
-          emails: refreshedEmails,
-          total: refreshedTotal
+          emails,
+          total
         };
       }
-      
       // Step 6: Cache the results
       this.cacheManager.set(cacheKey, {
         emails,
         total,
         timestamp: Date.now()
-      }, this.CACHE_TTL);
-      
+      }, userId);
       logger.info(`Returning ${emails.length} emails from database`);
       return { emails, total };
     } catch (error) {
       logger.error('Error listing emails:', error);
+      // [FIX] Propagate infrastructure/auth errors, do not return empty results
       throw error;
     }
   }
@@ -149,12 +180,20 @@ export class EmailFetcher {
   /**
    * Synchronize with Gmail API to fetch missing or newer emails
    */
-  private async synchronizeWithGmail(options: ListEmailsOptions): Promise<void> {
+  private async synchronizeWithGmail(options: ListEmailsOptions, userId?: string): Promise<void> {
+    if (!userId) {
+      throw new Error('User ID is required for Gmail synchronization');
+    }
+
     logger.info('Synchronizing with Gmail API');
-    
+
     try {
-      // Get Gmail client
-      const gmailClient = await this.authManager.getGmailClient();
+      // Get user-specific database manager
+      const databaseManager = await this.getUserDatabaseManager(userId);
+
+      // Get Gmail client with user context
+      const sessionId = await this.authManager.getSessionId(userId);
+      const gmailClient = await this.authManager.getGmailClient(sessionId);
       if (!gmailClient || !gmailClient.users || !gmailClient.users.messages) {
         throw new Error('Invalid Gmail client or missing messages API');
       }
@@ -172,6 +211,7 @@ export class EmailFetcher {
         });
       } catch (error) {
         logger.error('Error fetching message list from Gmail API:', error);
+        // [FIX] Propagate infrastructure/auth errors, do not return empty results
         throw new Error(`Failed to fetch messages: ${(error as Error).message || 'Unknown error'}`);
       }
       
@@ -187,7 +227,7 @@ export class EmailFetcher {
       if (messages.length === 0) {
         logger.info('No new messages to synchronize');
         // Still update the sync time to prevent repeated empty calls
-        this.cacheManager.set('last_gmail_sync', Date.now(), this.CACHE_TTL * 24);
+        this.cacheManager.set('last_gmail_sync', Date.now());
         return;
       }
       
@@ -213,8 +253,8 @@ export class EmailFetcher {
           // Convert to EmailIndex format
           const emailIndex = this.convertToEmailIndex(fullMessage.data);
           
-          // Save to database
-          await this.databaseManager.upsertEmailIndex(emailIndex);
+          // fetch user Database Manager associated to that user
+          await databaseManager.upsertEmailIndex(emailIndex, userId);
         } catch (error) {
           // Log error but continue processing other messages
           logger.error(`Error processing message ${message?.id || 'unknown'}:`, error);
@@ -222,11 +262,12 @@ export class EmailFetcher {
       }
       
       // Update last sync time
-      this.cacheManager.set('last_gmail_sync', Date.now(), this.CACHE_TTL * 24); // 24 hours
+      this.cacheManager.set('last_gmail_sync', Date.now()); // 24 hours
       
       logger.info('Synchronization completed');
     } catch (error) {
       logger.error('Error synchronizing with Gmail:', error);
+      // [FIX] Propagate infrastructure/auth errors, do not return empty results
       throw error;
     }
   }
@@ -359,9 +400,9 @@ export class EmailFetcher {
   }
 
   /**
-   * Generate cache key based on options
+   * Generate cache key based on options and user context
    */
-  private generateCacheKey(options: ListEmailsOptions): string {
+  private generateCacheKey(options: ListEmailsOptions, userId?: string): string {
     // Create a normalized version of options for consistent cache keys
     const normalizedOptions = {
       category: options.category,
@@ -372,7 +413,8 @@ export class EmailFetcher {
       labels: options.labels,
       query: options.query,
       limit: options.limit,
-      offset: options.offset
+      offset: options.offset,
+      userId: userId || 'default' // 🔧 FIX: Include userId in cache key to prevent contamination
     };
     
     return `list_emails_${JSON.stringify(normalizedOptions)}`;

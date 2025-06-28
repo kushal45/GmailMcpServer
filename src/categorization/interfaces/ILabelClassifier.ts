@@ -60,7 +60,7 @@ export interface ILabelClassifier extends IAnalyzer {
    * @param labels - Array of email labels
    * @returns Promise resolving to label classification result
    */
-  classifyLabels(labels: string[]): Promise<LabelClassification>;
+  classifyLabels(labels: string[],userId:string): Promise<LabelClassification>;
 
   /**
    * Detects spam indicators in labels

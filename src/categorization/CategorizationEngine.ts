@@ -1,4 +1,5 @@
 import { DatabaseManager } from '../database/DatabaseManager.js';
+import { UserDatabaseManagerFactory } from '../database/UserDatabaseManagerFactory.js';
 import { CacheManager } from '../cache/CacheManager.js';
 import { EmailIndex, CategorizeOptions, EmailStatistics, PriorityCategory } from '../types/index.js';
 import { logger } from '../utils/logger.js';
@@ -40,7 +41,7 @@ interface LegacyCategorizationConfig {
  * Maintains backward compatibility while providing improved modularity and testability.
  */
 export class CategorizationEngine {
-  private databaseManager: DatabaseManager;
+  private userDbManagerFactory: UserDatabaseManagerFactory;
   private cacheManager: CacheManager;
   private configManager: CategorizationConfigManager;
   
@@ -61,11 +62,11 @@ export class CategorizationEngine {
   };
 
   constructor(
-    databaseManager: DatabaseManager,
+    userDbManagerFactory: UserDatabaseManagerFactory,
     cacheManager: CacheManager,
     config?: LegacyCategorizationConfig | CategorizationSystemConfig
   ) {
-    this.databaseManager = databaseManager;
+    this.userDbManagerFactory = userDbManagerFactory;
     this.cacheManager = cacheManager;
     
     // Handle legacy configuration or use new system config
@@ -91,10 +92,23 @@ export class CategorizationEngine {
   }
 
   /**
+   * Get user-specific database manager
+   * @param userId User ID to get database manager for
+   */
+  private async getUserDatabaseManager(userId: string): Promise<DatabaseManager> {
+    if (!userId) {
+      throw new Error('User ID is required for database operations');
+    }
+    return this.userDbManagerFactory.getUserDatabaseManager(userId);
+  }
+
+  /**
    * Initialize analyzers using the factory pattern
    */
   private initializeAnalyzers(): void {
-    const factory = new AnalyzerFactory(this.databaseManager, this.cacheManager);
+    // Note: AnalyzerFactory will need to be updated to work with UserDatabaseManagerFactory
+    // For now, we'll pass null and handle database operations in the engine itself
+    const factory = new AnalyzerFactory(null as any, this.cacheManager);
     const config = this.configManager.getConfig();
     
     this.importanceAnalyzer = factory.createImportanceAnalyzer(config.analyzers.importance);
@@ -140,37 +154,36 @@ export class CategorizationEngine {
   /**
    * Main method to categorize emails based on configured rules and analyzers
    */
-  async categorizeEmails(options: CategorizeOptions): Promise<EnhancedCategorizationResult> {
-    logger.info('Starting email categorization', options);
-    
+  async categorizeEmails(options: CategorizeOptions, userContext?: { user_id: string; session_id: string }): Promise<EnhancedCategorizationResult> {
+    const userId = options.user_id || userContext?.user_id;
+    if (!userId) {
+      logger.error('categorizeEmails: user_id is required for per-user database operations');
+      throw new Error('user_id is required for categorization');
+    }
+    logger.info('Starting email categorization', { ...options, userId });
     try {
-      // Get all emails that need categorization
-      const emails = await this.getEmailsForCategorization(options);
-      
+      // Get the per-user database manager
+      const dbManager = await this.getUserDatabaseManager(userId);
+      // Get all emails that need categorization with user context
+      const emails = await this.getEmailsForCategorization(options, userContext, dbManager);
       let processed = 0;
       const categories = { high: 0, medium: 0, low: 0 };
       const categorizedEmails: EmailIndex[] = [];
-      
       // Track analyzer insights data
       const allImportanceRules: string[] = [];
       const confidenceScores: number[] = [];
       const ageDistribution = { recent: 0, moderate: 0, old: 0 };
       const sizeDistribution = { small: 0, medium: 0, large: 0 };
       let spamDetectedCount = 0;
-      
       for (const email of emails) {
         const category = await this.determineCategory(email);
         email.category = category;
-        
-        // Update database
-        await this.databaseManager.upsertEmailIndex(email);
-        
+        // Update database (per-user)
+        await dbManager.upsertEmailIndex(email, userId);
         // Collect the categorized email with all analyzer results
         categorizedEmails.push({ ...email });
-        
         categories[category]++;
         processed++;
-        
         // Collect analyzer insights data
         if (email.importanceMatchedRules) {
           allImportanceRules.push(...email.importanceMatchedRules);
@@ -187,16 +200,22 @@ export class CategorizationEngine {
         if (email.spam_score && email.spam_score > 0.5) {
           spamDetectedCount++;
         }
-        
+        try {
+          if (this.importanceAnalyzer && typeof this.importanceAnalyzer.getApplicableRules === 'function') {
+            const applicableRules = this.importanceAnalyzer.getApplicableRules(this.createAnalysisContext(email, userId));
+            this.metrics.rulesEvaluated += applicableRules.length;
+            logger.debug('[METRICS] Evaluated rules for email', { emailId: email.id, rulesEvaluated: applicableRules.length });
+          }
+        } catch (err) {
+          logger.error('[METRICS] Error incrementing rulesEvaluated', { emailId: email.id, error: err instanceof Error ? err.message : err });
+        }
         // Log progress every 100 emails
         if (processed % 100 === 0) {
           logger.info(`Categorized ${processed} emails...`);
         }
       }
-      
       // Clear cache after categorization
       this.cacheManager.flush();
-      
       // Generate analyzer insights
       const analyzer_insights = this.generateAnalyzerInsights(
         allImportanceRules,
@@ -206,9 +225,7 @@ export class CategorizationEngine {
         spamDetectedCount,
         processed
       );
-      
       logger.info('Email categorization completed', { processed, categories });
-      
       return {
         processed,
         categories,
@@ -265,7 +282,7 @@ export class CategorizationEngine {
   /**
    * Create analysis context from email data
    */
-  private createAnalysisContext(email: EmailIndex): EmailAnalysisContext {
+  private createAnalysisContext(email: EmailIndex,user_id:string='default'): EmailAnalysisContext {
     const subject = email?.subject?.toLowerCase() || '';
     const sender = email?.sender?.toLowerCase() || '';
     const snippet = email?.snippet?.toLowerCase() || '';
@@ -286,6 +303,7 @@ export class CategorizationEngine {
     return {
       email,
       subject,
+      user_id,
       sender,
       snippet,
       labels: email.labels || [],
@@ -320,7 +338,7 @@ export class CategorizationEngine {
             'DateSizeAnalyzer'
           ),
           this.runWithTimeout(
-            () => this.labelClassifier.classifyLabels(context.labels),
+            () => this.labelClassifier.classifyLabels(context.labels,context.user_id),
             config.orchestration.timeoutMs,
             'LabelClassifier'
           )
@@ -340,7 +358,7 @@ export class CategorizationEngine {
         this.metrics.dateSizeAnalysisTime += Date.now() - dateSizeStart;
         
         const labelStart = Date.now();
-        labelClassification = await this.labelClassifier.classifyLabels(context.labels);
+        labelClassification = await this.labelClassifier.classifyLabels(context.labels,context.user_id);
         this.metrics.labelClassificationTime += Date.now() - labelStart;
       }
 
@@ -496,51 +514,87 @@ export class CategorizationEngine {
 
   /**
    * Collects detailed analyzer results and stores them in the email object for persistence
+   * Ensures all expected fields are always set, with safe defaults if missing.
+   *
+   * Expected fields and defaults:
+   * - importanceScore: number (default 0)
+   * - importanceLevel: 'high' | 'medium' | 'low' (default 'medium')
+   * - importanceMatchedRules: string[] (default [])
+   * - importanceConfidence: number (default 0)
+   * - ageCategory: 'recent' | 'moderate' | 'old' (default 'moderate')
+   * - sizeCategory: 'small' | 'medium' | 'large' (default 'medium')
+   * - recencyScore: number (default 0)
+   * - sizePenalty: number (default 0)
+   * - gmailCategory: string (default 'primary')
+   * - spam_score: number (default 0)
+   * - promotional_score: number (default 0)
+   * - socialScore: number (default 0)
+   * - spamIndicators: string[] (default [])
+   * - promotionalIndicators: string[] (default [])
+   * - socialIndicators: string[] (default [])
+   * - analysisTimestamp: Date (always set)
+   * - analysisVersion: string (always set)
    */
   private collectAnalyzerResults(email: EmailIndex, combinedResult: CombinedAnalysisResult): void {
     try {
       // Extract importance analysis results
-      const importanceResult = combinedResult.importance;
-      email.importanceScore = importanceResult.score;
-      email.importanceLevel = importanceResult.level;
-      email.importanceMatchedRules = importanceResult.matchedRules || [];
-      email.importanceConfidence = importanceResult.confidence;
+      const importanceResult = combinedResult.importance || {};
+      email.importanceScore = (importanceResult.score !== undefined && importanceResult.score !== null) ? importanceResult.score : 0;
+      email.importanceLevel = (importanceResult.level !== undefined && importanceResult.level !== null) ? importanceResult.level : 'medium';
+      email.importanceMatchedRules = (importanceResult.matchedRules !== undefined && importanceResult.matchedRules !== null) ? importanceResult.matchedRules : [];
+      email.importanceConfidence = (importanceResult.confidence !== undefined && importanceResult.confidence !== null) ? importanceResult.confidence : 0;
 
       // Extract date/size analysis results
-      const dateSizeResult = combinedResult.dateSize;
-      email.ageCategory = dateSizeResult.ageCategory;
-      email.sizeCategory = dateSizeResult.sizeCategory;
-      email.recencyScore = dateSizeResult.recencyScore;
-      email.sizePenalty = dateSizeResult.sizePenalty;
+      const dateSizeResult = combinedResult.dateSize || {};
+      email.ageCategory = (dateSizeResult.ageCategory !== undefined && dateSizeResult.ageCategory !== null) ? dateSizeResult.ageCategory : 'moderate';
+      email.sizeCategory = (dateSizeResult.sizeCategory !== undefined && dateSizeResult.sizeCategory !== null) ? dateSizeResult.sizeCategory : 'medium';
+      // Robust: always set recencyScore and sizePenalty to 0 if missing
+      email.recencyScore = (typeof dateSizeResult.recencyScore === 'number' && !isNaN(dateSizeResult.recencyScore)) ? dateSizeResult.recencyScore : 0;
+      email.sizePenalty = (typeof dateSizeResult.sizePenalty === 'number' && !isNaN(dateSizeResult.sizePenalty)) ? dateSizeResult.sizePenalty : 0;
 
       // Extract label classification results
-      const labelClassification = combinedResult.labelClassification;
-      // Map 'other' category to 'primary' as fallback since EmailIndex doesn't support 'other'
-      email.gmailCategory = labelClassification.category === 'other' ? 'primary' : labelClassification.category;
-      email.spam_score = labelClassification.spam_score;
-      email.promotional_score = labelClassification.promotional_score;
-      email.socialScore = labelClassification.socialScore;
-      
+      const labelClassification = combinedResult.labelClassification || {};
+      email.gmailCategory = (labelClassification.category === 'other' || !labelClassification.category) ? 'primary' : labelClassification.category;
+      email.spam_score = (labelClassification.spamScore !== undefined && labelClassification.spamScore !== null) ? labelClassification.spamScore :
+                         (labelClassification.spam_score !== undefined && labelClassification.spam_score !== null) ? labelClassification.spam_score : 0;
+      email.promotional_score = (labelClassification.promotionalScore !== undefined && labelClassification.promotionalScore !== null) ? labelClassification.promotionalScore :
+                               (labelClassification.promotional_score !== undefined && labelClassification.promotional_score !== null) ? labelClassification.promotional_score : 0;
+      email.socialScore = (labelClassification.socialScore !== undefined && labelClassification.socialScore !== null) ? labelClassification.socialScore : 0;
+
       // Handle indicators arrays - store as arrays directly
       if (labelClassification.indicators) {
-        email.spamIndicators = labelClassification.indicators.spam || [];
-        email.promotionalIndicators = labelClassification.indicators.promotional || [];
-        email.socialIndicators = labelClassification.indicators.social || [];
+        email.spamIndicators = (labelClassification.indicators.spam !== undefined && labelClassification.indicators.spam !== null) ? labelClassification.indicators.spam : [];
+        email.promotionalIndicators = (labelClassification.indicators.promotional !== undefined && labelClassification.indicators.promotional !== null) ? labelClassification.indicators.promotional : [];
+        email.socialIndicators = (labelClassification.indicators.social !== undefined && labelClassification.indicators.social !== null) ? labelClassification.indicators.social : [];
+      } else {
+        email.spamIndicators = [];
+        email.promotionalIndicators = [];
+        email.socialIndicators = [];
       }
-
 
       // Add analysis metadata
       email.analysisTimestamp = new Date();
       email.analysisVersion = ANALYSIS_VERSION;
 
-      logger.debug('CategorizationEngine: Analyzer results collected', {
-        emailId: email.id,
-        importanceLevel: email.importanceLevel,
+      // Debug: print all analyzer fields after assignment
+      logger.debug('[DEBUG] Analyzer fields after assignment', {
+        id: email.id,
         importanceScore: email.importanceScore,
+        importanceLevel: email.importanceLevel,
+        importanceMatchedRules: email.importanceMatchedRules,
+        importanceConfidence: email.importanceConfidence,
         ageCategory: email.ageCategory,
         sizeCategory: email.sizeCategory,
+        recencyScore: email.recencyScore,
+        sizePenalty: email.sizePenalty,
         gmailCategory: email.gmailCategory,
         spam_score: email.spam_score,
+        promotional_score: email.promotional_score,
+        socialScore: email.socialScore,
+        spamIndicators: email.spamIndicators,
+        promotionalIndicators: email.promotionalIndicators,
+        socialIndicators: email.socialIndicators,
+        analysisTimestamp: email.analysisTimestamp,
         analysisVersion: email.analysisVersion
       });
     } catch (error) {
@@ -548,7 +602,6 @@ export class CategorizationEngine {
         emailId: email.id,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
-      
       // Set minimal analysis metadata even on error
       email.analysisTimestamp = new Date();
       email.analysisVersion = ANALYSIS_VERSION;
@@ -594,31 +647,51 @@ export class CategorizationEngine {
     };
   }
 
-  private async getEmailsForCategorization(options: CategorizeOptions): Promise<EmailIndex[]> {
+  /**
+   * Get emails for categorization for a specific user
+   */
+  private async getEmailsForCategorization(options: CategorizeOptions, userContext?: { user_id: string; session_id: string }, dbManager?: DatabaseManager): Promise<EmailIndex[]> {
+    const userId = options.user_id || userContext?.user_id;
+    if (!userId) {
+      logger.error('getEmailsForCategorization: user_id is required for per-user database operations');
+      throw new Error('user_id is required for email retrieval');
+    }
+    // Use provided dbManager or fetch it
+    const manager = dbManager || await this.getUserDatabaseManager(userId);
     if (options.forceRefresh) {
-      // Get all emails
-      return await this.databaseManager.searchEmails({
-        year: options.year
+      // Get all emails for this user
+      return await manager.searchEmails({
+        year: options.year,
+        user_id: userId
       });
     } else {
-      // Get only uncategorized emails (category IS NULL)
-      return await this.databaseManager.searchEmails({
+      // Get only uncategorized emails (category IS NULL) for this user
+      return await manager.searchEmails({
         year: options.year,
-        category: null
+        category: null,
+        user_id: userId
       });
     }
   }
 
-  async getStatistics(options: { groupBy: string, includeArchived: boolean }): Promise<EmailStatistics> {
-    const cacheKey = CacheManager.categoryStatsKey();
+  /**
+   * Get statistics for a specific user
+   */
+  async getStatistics(options: { groupBy: string, includeArchived: boolean }, userContext?: { user_id: string; session_id: string }): Promise<EmailStatistics> {
+    const userId = userContext?.user_id;
+    if (!userId) {
+      logger.error('getStatistics: user_id is required for per-user database operations');
+      throw new Error('user_id is required for statistics');
+    }
+    const cacheKey = CacheManager.categoryStatsKey(userId);
     const cached = this.cacheManager.get<EmailStatistics>(cacheKey);
-    
     if (cached) {
       return cached;
     }
-    
-    const stats = await this.databaseManager.getEmailStatistics(options.includeArchived);
-    
+    // Get per-user db manager
+    const dbManager = await this.getUserDatabaseManager(userId);
+    // Pass userId to get user-specific statistics
+    const stats = await dbManager.getEmailStatistics(options.includeArchived, userId);
     // Transform database stats to EmailStatistics format
     const result: EmailStatistics = {
       categories: {
@@ -643,7 +716,6 @@ export class CategorizationEngine {
         size: 0
       }
     };
-    
     // Process category stats
     for (const cat of stats.categories) {
       if (cat.category in result.categories) {
@@ -651,7 +723,6 @@ export class CategorizationEngine {
         result.categories.total += cat.count;
       }
     }
-    
     // Process year stats
     for (const year of stats.years) {
       result.years[year.year] = {
@@ -661,10 +732,8 @@ export class CategorizationEngine {
       result.total.count += year.count;
       result.total.size += year.total_size;
     }
-    
     // Cache the result
-    this.cacheManager.set(cacheKey, result, 300); // Cache for 5 minutes
-    
+    this.cacheManager.set(cacheKey, result, userId, 300); // Cache for 5 minutes
     return result;
   }
 
@@ -764,7 +833,12 @@ export class CategorizationEngine {
   /**
    * Perform a single email analysis without database updates (useful for testing)
    */
-  public async analyzeEmail(email: EmailIndex): Promise<CombinedAnalysisResult> {
+  public async analyzeEmail(email: EmailIndex, userContext?: { user_id: string; session_id: string }): Promise<CombinedAnalysisResult> {
+    // Ensure the email object has a user_id if provided in context
+    if (userContext?.user_id && !email.user_id) {
+      email.user_id = userContext.user_id;
+    }
+    
     const context = this.createAnalysisContext(email);
     return this.orchestrateAnalysis(context);
   }

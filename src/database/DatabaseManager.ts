@@ -11,6 +11,7 @@ import {
   SearchEngineCriteria,
   Job,
 } from "../types/index.js";
+import { fileURLToPath } from 'url';
 
 interface RunResult {
   lastID?: number; // For INSERT statements
@@ -21,67 +22,103 @@ export class DatabaseManager {
   private db: sqlite3.Database | null = null;
   private dbPath: string;
   private initialized: boolean = false;
-  private static instance: DatabaseManager | null = null;
-  private static instanceId: string = Math.random().toString(36).substr(2, 9);
-
-  constructor() {
-    // Prevent direct instantiation outside of getInstance()
-    if (DatabaseManager.instance && DatabaseManager.instance !== this) {
-      const error = `DatabaseManager: Attempted to create multiple instances. Use getInstance() instead. Current instance ID: ${DatabaseManager.instanceId}`;
-      logger.error(error);
-      throw new Error(error);
-    }
-
-    // Set the static instance if it's not already set (first time construction)
-    if (!DatabaseManager.instance) {
-      DatabaseManager.instance = this;
-    }
-
+  private instanceId: string = Math.random().toString(36).substr(2, 9);
+  private userId: string | undefined;
+  private pendingWrites: number = 0;
+  private idlePromise: Promise<void> = Promise.resolve();
+  private resolveIdle: (() => void) | null = null;
+  
+  /**
+   * Create a new DatabaseManager instance
+   * @param userId Optional user ID for multi-user mode
+   */
+  constructor(userId: string | undefined) {
+    this.userId = userId;
+    
     // Determine the project root directory using Node.js compatible approach
-    // Since we know this file is in src/database, we can navigate up from current working directory
-    const projectRoot = process.cwd();
+    // Since we know this file is in src/database, we can navigate up from current file location
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const projectRoot = path.resolve(__dirname, '../../');
 
     // Always resolve storage path relative to project root, not cwd or absolute
-    const storagePath = path.join(
-      projectRoot,
-      process.env.STORAGE_PATH || "data"
-    );
-    this.dbPath = path.join(storagePath, "gmail-mcp.db");
-  }
-
-  static getInstance(): DatabaseManager {
-    if (!this.instance) {
-      this.instance = new DatabaseManager();
-      logger.info(
-        `DatabaseManager singleton created with ID: ${this.instanceId}`,
-        {
-          timestamp: new Date().toISOString(),
-          instanceId: this.instanceId,
-        }
-      );
+    const storagePath = process.env.STORAGE_PATH
+      ? path.resolve(projectRoot, process.env.STORAGE_PATH)
+      : path.join(projectRoot, 'data');
+    
+    // In multi-user mode, the dbPath will be set during initialization
+    // For backward compatibility with single-user mode, set a default path
+    if (userId) {
+      this.dbPath = path.join(storagePath, "db", `user_${userId}_gmail-mcp.db`);
+    } else {
+      this.dbPath = path.join(storagePath, "gmail-mcp.db");
     }
-    return this.instance;
+    // Diagnostic log for test isolation
+    console.error('[DIAGNOSTIC] DatabaseManager constructor:', {
+      userId,
+      storagePath,
+      envStoragePath: process.env.STORAGE_PATH,
+      dbPath: this.dbPath
+    });
+    logger.debug(`DatabaseManager created for ${userId ? 'user ' + userId : 'single-user mode'} with ID: ${this.instanceId}`);
   }
 
-  static validateSingletonIntegrity(): void {
-    if (!this.instance) {
-      throw new Error(
-        "DatabaseManager: No singleton instance exists. Call getInstance() first."
-      );
-    }
-    logger.info(
-      `DatabaseManager singleton validation passed. Instance ID: ${this.instanceId}`
-    );
-  }
-
+  /**
+   * Get the instance ID for this DatabaseManager
+   */
   getInstanceId(): string {
-    return DatabaseManager.instanceId;
+    return this.instanceId;
+  }
+  
+  /**
+   * Get the user ID for this DatabaseManager
+   */
+  getUserId(): string | undefined {
+    return this.userId;
+  }
+  
+  /**
+   * Create a new instance for a specific user
+   * @param userId User ID to create instance for
+   */
+  static createForUser(userId: string): DatabaseManager {
+    return new DatabaseManager(userId);
+  }
+  
+  /**
+   * Get a singleton instance (for backward compatibility with single-user mode)
+   */
+  // Static singleton instance for backward compatibility
+  private static singletonInstance: DatabaseManager | null = null;
+  
+  static getInstance(): DatabaseManager {
+    // This method is maintained for backward compatibility with single-user mode
+    if (!this.singletonInstance) {
+      this.singletonInstance = new DatabaseManager(undefined);
+      logger.info(`DatabaseManager singleton created for single-user mode`);
+    }
+    
+    return this.singletonInstance;
   }
 
-  async initialize(dbPath?: string): Promise<void> {
+  /**
+   * Reset the singleton instance (for test isolation)
+   */
+  static resetInstance(): void {
+    logger.info('DatabaseManager: Resetting singleton instance for test isolation');
+    this.singletonInstance = null;
+  }
+
+  /**
+   * Initialize the database
+   * @param dbPath Optional path to use for the database file
+   * @param useMigrations If true, skip manual schema creation (for test/migration-managed DBs)
+   */
+  async initialize(dbPath?: string, useMigrations: boolean = false): Promise<void> {
     if (this.initialized) {
       logger.info('DatabaseManager already initialized', {
-        instanceId: DatabaseManager.instanceId,
+        instanceId: this.instanceId,
+        userId: this.userId,
         dbPath: this.dbPath,
         initialized: this.initialized,
         dbExists: this.db !== null,
@@ -92,7 +129,7 @@ export class DatabaseManager {
     }
 
     try {
-      this.dbPath= dbPath || this.dbPath;
+      this.dbPath = dbPath || this.dbPath;
       const storageDir = path.dirname(this.dbPath);
       await fs.mkdir(storageDir, { recursive: true });
 
@@ -101,7 +138,8 @@ export class DatabaseManager {
         this.db = new sqlite3.Database(this.dbPath, (err) => {
           if (err) {
             logger.error('🔍 DIAGNOSTIC: Database connection failed', {
-              instanceId: DatabaseManager.instanceId,
+              instanceId: this.instanceId,
+              userId: this.userId,
               error: err.message,
               service: 'gmail-mcp-server',
               timestamp: new Date().toISOString()
@@ -113,16 +151,26 @@ export class DatabaseManager {
         });
       });
 
+      // Enable WAL mode for better concurrency
+      await this.run("PRAGMA journal_mode = WAL");
+
       // Enable foreign keys
       await this.run("PRAGMA foreign_keys = ON");
 
+      if (!useMigrations) {
       // Create tables
       await this.createTables();
-
       // Run migration for existing databases
       await this.migrateToAnalyzerSchema();
+      }
 
       this.initialized = true;
+      
+      logger.info(`Database initialized at ${this.dbPath}`, {
+        instanceId: this.instanceId,
+        userId: this.userId,
+        dbPath: this.dbPath
+      });
     } catch (error) {
       logger.error("Failed to initialize database:", error);
       throw error;
@@ -132,7 +180,7 @@ export class DatabaseManager {
   private async createTables(): Promise<void> {
     try {
       const queries = [
-        // Email index table (basic schema without analyzer columns for migration compatibility)
+        // Email index table (basic schema with user_id for multi-user support)
         `CREATE TABLE IF NOT EXISTS email_index (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
@@ -150,7 +198,8 @@ export class DatabaseManager {
         archive_date INTEGER,
         archive_location TEXT,
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+        updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+        user_id TEXT
       )`,
 
         // Create indexes for common queries
@@ -174,7 +223,8 @@ export class DatabaseManager {
         created INTEGER DEFAULT (strftime('%s', 'now')),
         last_run INTEGER,
         total_archived INTEGER DEFAULT 0,
-        last_archived INTEGER DEFAULT 0
+        last_archived INTEGER DEFAULT 0,
+        user_id TEXT
       )`,
 
         // Archive records table
@@ -187,17 +237,19 @@ export class DatabaseManager {
         format TEXT,
         size INTEGER,
         restorable INTEGER DEFAULT 1,
-        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+        user_id TEXT
       )`,
 
-        // Saved searches table
+        // Saved searches table (with user_id for multi-user support)
         `CREATE TABLE IF NOT EXISTS saved_searches (
         id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
         criteria TEXT NOT NULL,
         created INTEGER DEFAULT (strftime('%s', 'now')),
         last_used INTEGER,
-        result_count INTEGER
+        result_count INTEGER,
+        user_id TEXT
       )`,
 
         // Email cache table for performance
@@ -220,7 +272,8 @@ export class DatabaseManager {
         created_at INTEGER NOT NULL,
         started_at INTEGER,
         completed_at INTEGER,
-        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+        updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+        user_id TEXT
       )`,
 
         // Create index for job status queries
@@ -476,24 +529,25 @@ export class DatabaseManager {
   // Now returns RunResult for INSERT/UPDATE/DELETE, or void for others.
   private run(sql: string, params: any[] = []): Promise<RunResult | void> {
     return new Promise(async (resolve, reject) => {
-
       if (!this.db) {
         logger.error('🔍 DIAGNOSTIC: Database connection is null in run(), attempting reconnection', {
           dbExists: this.db !== null,
           initialized: this.initialized,
-          instanceId: DatabaseManager.instanceId,
+          instanceId: this.instanceId,
+          userId: this.userId,
           dbPath: this.dbPath,
           service: 'gmail-mcp-server',
           timestamp: new Date().toISOString(),
           stackTrace: new Error().stack
         });
-        
+        this.incrementWrites();
         // Attempt automatic reconnection for test environments
         try {
-          //await this.reconnect();
+          await this.reconnect();
         } catch (reconnectError) {
           logger.error('🔍 DIAGNOSTIC: Database reconnection failed', {
-            instanceId: DatabaseManager.instanceId,
+            instanceId: this.instanceId,
+            userId: this.userId,
             reconnectError: reconnectError instanceof Error ? reconnectError.message : 'Unknown error',
             service: 'gmail-mcp-server',
             timestamp: new Date().toISOString()
@@ -603,38 +657,67 @@ export class DatabaseManager {
     });
   }
 
-  // Public method for non-query operations, leveraging the private run
-  // Returns RunResult for DML, or void for DDL.
+  // Public methods for database operations
+  
+  /**
+   * Execute non-query operations (INSERT, UPDATE, DELETE, CREATE, ALTER)
+   * Returns RunResult for DML, or void for DDL
+   */
   public execute(sql: string, params: any[] = []): Promise<RunResult | void> {
     return this.run(sql, params);
   }
+  
+  /**
+   * Execute a query that returns a single row
+   * @param sql SQL query
+   * @param params Query parameters
+   */
+  public async query<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+    return this.get(sql, params) as Promise<T | null>;
+  }
+  
+  /**
+   * Execute a query that returns multiple rows
+   * @param sql SQL query
+   * @param params Query parameters
+   */
+  public async queryAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    return this.all(sql, params) as Promise<T[]>;
+  }
 
   private get(sql: string, params: any[] = []): Promise<any> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       // Add initialization check and diagnostic logging
       if (this.db === null) {
         const errorMsg = `DatabaseManager.get() called before database initialization. DB state: null, initialized: ${
           this.initialized
-        }, instanceId: ${this.getInstanceId()}`;
+        }, instanceId: ${this.getInstanceId()}, userId: ${this.userId}`;
         logger.error(errorMsg, { sql, params, stackTrace: new Error().stack });
-        reject(new Error(errorMsg));
+        // Attempt automatic reconnection for test environments
+        try {
+          await this.reconnect();
+        } catch (reconnectError) {
+          reject(new Error(errorMsg));
+          return;
+        }
+      }
+      if (this.db === null) {
+        reject(new Error('Database connection is still null after reconnection attempt'));
         return;
       }
-
+      const db = this.db;
       if (!this.initialized) {
-        const warningMsg = `DatabaseManager.get() called while database is initializing. DB exists: ${!!this
-          .db}, initialized: ${
+        const warningMsg = `DatabaseManager.get() called while database is initializing. DB exists: ${!!db}, initialized: ${
           this.initialized
-        }, instanceId: ${this.getInstanceId()}`;
+        }, instanceId: ${this.getInstanceId()}, userId: ${this.userId}`;
         // logger.warn(warningMsg, { sql, params });
       } else {
         logger.info(
-          `DatabaseManager.get() accessing initialized database (instanceId: ${this.getInstanceId()})`,
+          `DatabaseManager.get() accessing initialized database (instanceId: ${this.getInstanceId()}, userId: ${this.userId})`,
           { sql }
         );
       }
-
-      this.db.get(sql, params, (err, row) => {
+      db.get(sql, params, (err, row) => {
         if (err) reject(err);
         else resolve(row);
       });
@@ -643,24 +726,24 @@ export class DatabaseManager {
 
   private async all(sql: string, params: any[] = []): Promise<any[]> {
     try {
-
       if (!this.db) {
         logger.error('🔍 DIAGNOSTIC: Database connection is null in all(), attempting reconnection', {
           dbExists: this.db !== null,
           initialized: this.initialized,
-          instanceId: DatabaseManager.instanceId,
+          instanceId: this.instanceId,
+          userId: this.userId,
           dbPath: this.dbPath,
           service: 'gmail-mcp-server',
           timestamp: new Date().toISOString(),
           stackTrace: new Error().stack
         });
-        
         // Attempt automatic reconnection for test environments
         try {
-          //await this.reconnect();
+          await this.reconnect();
         } catch (reconnectError) {
           logger.error('🔍 DIAGNOSTIC: Database reconnection failed in all()', {
-            instanceId: DatabaseManager.instanceId,
+            instanceId: this.instanceId,
+            userId: this.userId,
             reconnectError: reconnectError instanceof Error ? reconnectError.message : 'Unknown error',
             service: 'gmail-mcp-server',
             timestamp: new Date().toISOString()
@@ -668,10 +751,14 @@ export class DatabaseManager {
           throw new Error('Database not initialized and reconnection failed');
         }
       }
-
+      if (!this.db) {
+        throw new Error('Database connection is still null after reconnection attempt');
+      }
+      // this.db is guaranteed not null here
+      const db = this.db;
       const rawSqlString = this.getInterpolatedSql(sql, params);
       return new Promise((resolve, reject) => {
-        this.db!.all(sql, params, (err, rows) => {
+        db.all(sql, params, (err, rows) => {
           if (err) reject(err);
           else return resolve(rows);
         });
@@ -757,7 +844,10 @@ export class DatabaseManager {
   }
 
   // Email index methods
-  async upsertEmailIndex(email: EmailIndex): Promise<void> {
+  async upsertEmailIndex(email: EmailIndex, userId?: string): Promise<void> {
+    // Use the provided userId, or fall back to email.user_id, or finally instance userId
+    const ownerUserId = userId || email.user_id || this.userId;
+    
     const sql = `
       INSERT OR REPLACE INTO email_index (
         id, thread_id, category, subject, sender, recipients,
@@ -767,8 +857,8 @@ export class DatabaseManager {
         age_category, size_category, recency_score, size_penalty,
         gmail_category, spam_score, promotional_score, social_score,
         spam_indicators, promotional_indicators, social_indicators,
-        analysis_timestamp, analysis_version, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+        analysis_timestamp, analysis_version, updated_at, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), ?)
     `;
 
     await this.run(sql, [
@@ -788,22 +878,22 @@ export class DatabaseManager {
       email?.archiveDate?.getTime() || null,
       email?.archiveLocation || null,
       // Importance Analysis Results
-      email?.importanceScore || null,
-      email?.importanceLevel || null,
+      email?.importanceScore ?? null,
+      email?.importanceLevel ?? null,
       email?.importanceMatchedRules
         ? JSON.stringify(email.importanceMatchedRules)
         : null,
-      email?.importanceConfidence || null,
+      email?.importanceConfidence ?? null,
       // Date/Size Analysis Results
-      email?.ageCategory || null,
-      email?.sizeCategory || null,
-      email?.recencyScore || null,
-      email?.sizePenalty || null,
+      email?.ageCategory ?? null,
+      email?.sizeCategory ?? null,
+      email?.recencyScore ?? null,
+      email?.sizePenalty ?? null,
       // Label Classification Results
-      email?.gmailCategory || null,
-      email?.spam_score || null,
-      email?.promotional_score || null,
-      email?.socialScore || null,
+      email?.gmailCategory ?? null,
+      email?.spam_score ?? null,
+      email?.promotional_score ?? null,
+      email?.socialScore ?? null,
       email?.spamIndicators ? JSON.stringify(email.spamIndicators) : null,
       email?.promotionalIndicators
         ? JSON.stringify(email.promotionalIndicators)
@@ -812,10 +902,16 @@ export class DatabaseManager {
       // Analysis Metadata
       email?.analysisTimestamp?.getTime() || null,
       email?.analysisVersion || null,
+      // User ID for multi-user support
+      ownerUserId || null,
     ]);
   }
 
-  async bulkUpsertEmailIndex(emails: EmailIndex[]): Promise<void> {
+  async bulkUpsertEmailIndex(emails: EmailIndex[], userId?: string): Promise<void> {
+    // Use the provided userId or fall back to the instance userId
+    // Note: For bulk operations, we use the provided userId for all emails
+    const ownerUserId = userId || this.userId;
+    
     const sql = `
       INSERT OR REPLACE INTO email_index (
         id, thread_id, category, subject, sender, recipients,
@@ -825,8 +921,8 @@ export class DatabaseManager {
         age_category, size_category, recency_score, size_penalty,
         gmail_category, spam_score, promotional_score, social_score,
         spam_indicators, promotional_indicators, social_indicators,
-        analysis_timestamp, analysis_version, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+        analysis_timestamp, analysis_version, updated_at, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), ?)
     `;
     const paramSets = emails.map((email) => [
       email.id,
@@ -845,22 +941,22 @@ export class DatabaseManager {
       email.archiveDate ? email.archiveDate.getTime() : null,
       email.archiveLocation || null,
       // Importance Analysis Results
-      email?.importanceScore || null,
-      email?.importanceLevel || null,
+      email?.importanceScore ?? null,
+      email?.importanceLevel ?? null,
       email?.importanceMatchedRules
         ? JSON.stringify(email.importanceMatchedRules)
         : null,
-      email?.importanceConfidence || null,
+      email?.importanceConfidence ?? null,
       // Date/Size Analysis Results
-      email?.ageCategory || null,
-      email?.sizeCategory || null,
-      email?.recencyScore || null,
-      email?.sizePenalty || null,
+      email?.ageCategory ?? null,
+      email?.sizeCategory ?? null,
+      email?.recencyScore ?? null,
+      email?.sizePenalty ?? null,
       // Label Classification Results
-      email?.gmailCategory || null,
-      email?.spam_score || null,
-      email?.promotional_score || null,
-      email?.socialScore || null,
+      email?.gmailCategory ?? null,
+      email?.spam_score ?? null,
+      email?.promotional_score ?? null,
+      email?.socialScore ?? null,
       email?.spamIndicators ? JSON.stringify(email.spamIndicators) : null,
       email?.promotionalIndicators
         ? JSON.stringify(email.promotionalIndicators)
@@ -869,6 +965,8 @@ export class DatabaseManager {
       // Analysis Metadata
       email?.analysisTimestamp?.getTime() || null,
       email?.analysisVersion || null,
+      // User ID for multi-user support - use email's user_id if available
+      email.user_id || ownerUserId || null,
     ]);
     await this.run(sql, paramSets);
   }
@@ -878,9 +976,14 @@ export class DatabaseManager {
     return row ? this.rowToEmailIndex(row) : null;
   }
 
+  /**
+   * Search emails with user context for multi-user support
+   * @param criteria Search criteria including optional user_id
+   */
   async searchEmails(criteria: SearchEngineCriteria): Promise<EmailIndex[]> {
     let sql = "SELECT *,COUNT(*) OVER () AS total_email_count FROM email_index WHERE 1=1";
     const params: any[] = [];
+
 
     if (criteria?.category === null) {
       sql += " AND category IS NULL";
@@ -968,6 +1071,10 @@ export class DatabaseManager {
     }
 
     const rows = await this.all(sql, params);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[DEBUG] searchEmails SQL:', sql);
+      console.log('[DEBUG] searchEmails params:', params);
+    }
     return rows.map((row) => this.rowToEmailIndex(row));
   }
 
@@ -988,26 +1095,27 @@ export class DatabaseManager {
       archived: row.archived === 1,
       archiveDate: row.archive_date ? new Date(row.archive_date) : undefined,
       archiveLocation: row.archive_location,
+      user_id: row.user_id || undefined,  // Added for multi-user support
 
       // Importance Analysis Results
-      importanceScore: row.importance_score || undefined,
-      importanceLevel: row.importance_level || undefined,
+      importanceScore: row.importance_score ?? undefined,
+      importanceLevel: row.importance_level ?? undefined,
       importanceMatchedRules: row.importance_matched_rules
         ? JSON.parse(row.importance_matched_rules)
         : undefined,
-      importanceConfidence: row.importance_confidence || undefined,
+      importanceConfidence: row.importance_confidence ?? undefined,
 
       // Date/Size Analysis Results
-      ageCategory: row.age_category || undefined,
-      sizeCategory: row.size_category || undefined,
-      recencyScore: row.recency_score || undefined,
-      sizePenalty: row.size_penalty || undefined,
+      ageCategory: row.age_category ?? undefined,
+      sizeCategory: row.size_category ?? undefined,
+      recencyScore: row.recency_score ?? undefined,
+      sizePenalty: row.size_penalty ?? undefined,
 
       // Label Classification Results
-      gmailCategory: row.gmail_category || undefined,
-      spam_score: row.spam_score || undefined,
-      promotional_score: row.promotional_score || undefined,
-      socialScore: row.social_score || undefined,
+      gmailCategory: row.gmail_category ?? undefined,
+      spam_score: row.spam_score ?? undefined,
+      promotional_score: row.promotional_score ?? undefined,
+      socialScore: row.social_score ?? undefined,
       spamIndicators: row.spam_indicators
         ? JSON.parse(row.spam_indicators)
         : undefined,
@@ -1058,14 +1166,40 @@ export class DatabaseManager {
     return id;
   }
 
-  async getArchiveRules(activeOnly: boolean = false): Promise<ArchiveRule[]> {
+  /**
+   * Get archive rules with user context for multi-user support
+   * @param activeOnly Filter for enabled rules only
+   * @param userId Optional user ID (defaults to the instance's user ID)
+   */
+  async getArchiveRules(activeOnly: boolean = false, userId?: string): Promise<ArchiveRule[]> {
+    // Use the provided userId or fall back to the instance userId
+    const ownerUserId = userId || this.userId;
+    
     let sql = "SELECT * FROM archive_rules";
-    if (activeOnly) {
-      sql += " WHERE enabled = 1";
+    const params: any[] = [];
+    
+    // Build WHERE clause conditions
+    const conditions: string[] = [];
+    
+    // Filter by user_id if we're in multi-user mode
+    if (ownerUserId) {
+      conditions.push("user_id = ?");
+      params.push(ownerUserId);
     }
+    
+    // Filter by enabled status if requested
+    if (activeOnly) {
+      conditions.push("enabled = 1");
+    }
+    
+    // Add WHERE clause if we have conditions
+    if (conditions.length > 0) {
+      sql += " WHERE " + conditions.join(" AND ");
+    }
+    
     sql += " ORDER BY created DESC";
 
-    const rows = await this.all(sql);
+    const rows = await this.all(sql, params);
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -1111,24 +1245,49 @@ export class DatabaseManager {
   }
 
   // Saved search methods
-  async saveSearch(name: string, criteria: any): Promise<string> {
+  /**
+   * Save a search with user context for multi-user support
+   * @param name Name of the saved search
+   * @param criteria Search criteria to save
+   * @param userId ID of the user who owns this search
+   */
+  async saveSearch(name: string, criteria: any, userId?: string): Promise<string> {
     const id = `search_${Date.now()}_${Math.random()
       .toString(36)
       .substr(2, 9)}`;
 
+    // Use the provided userId or fall back to the instance userId
+    const ownerUserId = userId || this.userId;
+
     const sql = `
-      INSERT INTO saved_searches (id, name, criteria)
-      VALUES (?, ?, ?)
+      INSERT INTO saved_searches (id, name, criteria, user_id)
+      VALUES (?, ?, ?, ?)
     `;
 
-    await this.run(sql, [id, name, JSON.stringify(criteria)]);
+    await this.run(sql, [id, name, JSON.stringify(criteria), ownerUserId]);
     return id;
   }
 
-  async getSavedSearches(): Promise<SavedSearch[]> {
-    const rows = await this.all(
-      "SELECT * FROM saved_searches ORDER BY created DESC"
-    );
+  /**
+   * Get saved searches for a specific user
+   * @param userId Optional user ID (defaults to the instance's user ID)
+   */
+  async getSavedSearches(userId?: string): Promise<SavedSearch[]> {
+    // Use the provided userId or fall back to the instance userId
+    const ownerUserId = userId || this.userId;
+    
+    let sql = "SELECT * FROM saved_searches";
+    const params: any[] = [];
+    
+    // Filter by user_id if we're in multi-user mode
+    if (ownerUserId) {
+      sql += " WHERE user_id = ?";
+      params.push(ownerUserId);
+    }
+    
+    sql += " ORDER BY created DESC";
+    
+    const rows = await this.all(sql, params);
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -1138,6 +1297,7 @@ export class DatabaseManager {
         ? new Date(row.last_used * 1000)
         : new Date(row.created * 1000),
       resultCount: row.result_count,
+      user_id: row.user_id || this.userId || 'default',
     }));
   }
 
@@ -1193,43 +1353,51 @@ export class DatabaseManager {
   }
 
   // Statistics methods
-  async getEmailStatistics(includeArchived: boolean = true): Promise<any> {
+  async getEmailStatistics(includeArchived: boolean = true, userId?: string): Promise<any> {
+    // Use the provided userId or fall back to the instance userId
+    const ownerUserId = userId || this.userId;
+    
+    // Base condition for filtering by archived status
     const archivedCondition = includeArchived ? "" : " AND archived = 0";
-
+    
+    // User filtering condition
+    const userCondition = ownerUserId ? " AND user_id = ?" : "";
+    const userParams = ownerUserId ? [ownerUserId] : [];
+    
     // Category stats
     const categoryStats = await this.all(`
       SELECT category, COUNT(*) as count
       FROM email_index
-      WHERE category IS NOT NULL ${archivedCondition}
+      WHERE category IS NOT NULL ${archivedCondition} ${userCondition}
       GROUP BY category
-    `);
+    `, userParams);
 
     // Year stats
     const yearStats = await this.all(`
       SELECT year, COUNT(*) as count, SUM(size) as total_size
       FROM email_index
-      WHERE year IS NOT NULL ${archivedCondition}
+      WHERE year IS NOT NULL ${archivedCondition} ${userCondition}
       GROUP BY year
       ORDER BY year DESC
-    `);
+    `, userParams);
 
     // Size stats
     const sizeStats = await this.get(`
-      SELECT 
+      SELECT
         SUM(CASE WHEN size < 102400 THEN 1 ELSE 0 END) as small,
         SUM(CASE WHEN size >= 102400 AND size < 1048576 THEN 1 ELSE 0 END) as medium,
         SUM(CASE WHEN size >= 1048576 THEN 1 ELSE 0 END) as large,
         SUM(size) as total_size
       FROM email_index
-      WHERE 1=1 ${archivedCondition}
-    `);
+      WHERE 1=1 ${archivedCondition} ${userCondition}
+    `, userParams);
 
     // Archive stats
     const archiveStats = await this.get(`
       SELECT COUNT(*) as count, SUM(size) as total_size
       FROM email_index
-      WHERE archived = 1
-    `);
+      WHERE archived = 1 ${userCondition}
+    `, userParams);
 
     return {
       categories: categoryStats,
@@ -1240,38 +1408,111 @@ export class DatabaseManager {
   }
 
   // mark emails as deleted
-  async markEmailsAsDeleted(emailIds: string[]): Promise<void> {
+  async markEmailsAsDeleted(emailIds: string[], userId?: string): Promise<void> {
     if (emailIds.length === 0) return;
-    const sql = `
+    
+    // Use the provided userId or fall back to the instance userId
+    const ownerUserId = userId || this.userId;
+    
+    let sql = `
     UPDATE email_index
     SET archived = 1, archive_location = ?, archive_date = strftime('%s', 'now')
-    WHERE id IN (${emailIds.map(() => "?").join(", ")})
-  `;
-    await this.run(sql, ["trash", ...emailIds]);
+    WHERE id IN (${emailIds.map(() => "?").join(", ")})`;
+    
+    // Add user filtering for multi-user support if a user ID is available
+    const params = ["trash", ...emailIds];
+    
+    if (ownerUserId) {
+      sql += ` AND user_id = ?`;
+      params.push(ownerUserId);
+    }
+    
+    await this.run(sql, params);
   }
 
-  async deleteEmailIds(emails: EmailIndex[]): Promise<number> {
+  async deleteEmailIds(emails: EmailIndex[], userId?: string): Promise<number> {
     if (emails.length === 0) return 0;
-    const sql = `DELETE FROM email_index WHERE id IN (${emails
+    
+    // Use the provided userId or fall back to the instance userId
+    const ownerUserId = userId || this.userId;
+    
+    console.log('🔍 DIAGNOSTIC: DatabaseManager.deleteEmailIds called', {
+      emailCount: emails.length,
+      requestedUserId: userId,
+      instanceUserId: this.userId,
+      finalUserId: ownerUserId,
+      emailIds: emails.slice(0, 3).map(e => e.id),
+      emailUserIds: emails.slice(0, 3).map(e => e.user_id || 'undefined')
+    });
+    
+    let sql = `DELETE FROM email_index WHERE id IN (${emails
       .map(() => "?")
       .join(", ")})`;
-    await this.run(
-      sql,
-      emails.map((email) => email.id)
-    );
-    return emails.length;
+    
+    // Add user filtering for multi-user support if a user ID is available
+    const params = [...emails.map((email) => email.id)];
+    
+    if (ownerUserId) {
+      sql += ` AND user_id = ?`;
+      params.push(ownerUserId);
+    }
+    
+    console.log('🔍 DIAGNOSTIC: Executing delete SQL', {
+      sql: sql,
+      paramCount: params.length,
+      firstFewParams: params.slice(0, 5),
+      hasUserIdFilter: !!ownerUserId
+    });
+    
+    const result = await this.run(sql, params);
+    const actualDeleted = (result as any)?.changes || 0;
+    
+    console.log('🔍 DIAGNOSTIC: Delete SQL result', {
+      requestedEmails: emails.length,
+      actualChanges: actualDeleted,
+      difference: emails.length - actualDeleted
+    });
+    
+    return actualDeleted; // Return actual deleted count, not requested count
+  }
+
+  private incrementWrites() {
+    if (this.pendingWrites === 0) {
+      this.idlePromise = new Promise(resolve => {
+        this.resolveIdle = resolve;
+      });
+    }
+    this.pendingWrites++;
+  }
+
+  private decrementWrites() {
+    this.pendingWrites--;
+    if (this.pendingWrites === 0 && this.resolveIdle) {
+      this.resolveIdle();
+      this.resolveIdle = null;
+    }
+  }
+
+  async waitForIdle(): Promise<void> {
+    return this.idlePromise;
   }
 
   async close(): Promise<void> {
+    await this.waitForIdle();
     if (this.db) {
-      await new Promise<void>((resolve, reject) => {
-        this.db!.close((err) => {
-          if (err) reject(err);
-          else resolve();
+      return new Promise((resolve, reject) => {
+        this.db?.close((err) => {
+          if (err) {
+            logger.error('Failed to close database:', err);
+            reject(err);
+          } else {
+            this.db = null;
+            this.initialized = false;
+            logger.info('Database connection closed');
+            resolve();
+          }
         });
       });
-      this.db = null;
-      this.initialized = false;
     }
   }
 
@@ -1280,7 +1521,6 @@ export class DatabaseManager {
    * This is primarily for test environments where the connection might be closed during isolation
    */
   private async reconnect(): Promise<void> {
-
     try {
       // Ensure storage directory exists
       const storageDir = path.dirname(this.dbPath);
@@ -1291,7 +1531,8 @@ export class DatabaseManager {
         this.db = new sqlite3.Database(this.dbPath, (err) => {
           if (err) {
             logger.error('🔍 DIAGNOSTIC: Database reconnection failed', {
-              instanceId: DatabaseManager.instanceId,
+              instanceId: this.instanceId,
+              userId: this.userId,
               error: err.message,
               service: 'gmail-mcp-server',
               timestamp: new Date().toISOString()
@@ -1323,7 +1564,7 @@ export class DatabaseManager {
       CREATE TABLE IF NOT EXISTS job_statuses (
         job_id TEXT PRIMARY KEY,
         job_type TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED')),
+        status TEXT NOT NULL CHECK(status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'CANCELLED')),
         request_params TEXT,
         progress INTEGER,
         results TEXT,
@@ -1331,7 +1572,8 @@ export class DatabaseManager {
         created_at INTEGER NOT NULL,
         started_at INTEGER,
         completed_at INTEGER,
-        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+        updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+        user_id TEXT
       )
     `;
     await this.run(query);
@@ -1346,6 +1588,9 @@ export class DatabaseManager {
     await this.run(
       "CREATE INDEX IF NOT EXISTS idx_job_created_at ON job_statuses(created_at)"
     );
+    await this.run(
+      "CREATE INDEX IF NOT EXISTS idx_job_user_id ON job_statuses(user_id)"
+    );
   }
 
   async insertJob(job: Job): Promise<void> {
@@ -1355,11 +1600,11 @@ export class DatabaseManager {
       return;
     }
 
-    // Fixed SQL: removed duplicate placeholder
+    // Add user_id field to support multi-user isolation
     const sql = `
       INSERT INTO job_statuses (
-        job_id, job_type, status, request_params, created_at
-      ) VALUES (?, ?, ?, ?, ?)
+        job_id, job_type, status, request_params, created_at, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?)
     `;
 
     await this.run(sql, [
@@ -1368,6 +1613,7 @@ export class DatabaseManager {
       job.status,
       JSON.stringify(job.request_params),
       Math.floor(job.created_at.getTime() / 1000),
+      job.user_id || null,
     ]);
   }
 
@@ -1403,6 +1649,7 @@ export class DatabaseManager {
       completed_at: row.completed_at
         ? new Date(row.completed_at * 1000)
         : undefined,
+      user_id: row.user_id,
     };
   }
 
@@ -1476,6 +1723,12 @@ export class DatabaseManager {
     let sql = "SELECT * FROM job_statuses WHERE 1=1";
     const params: any[] = [];
 
+    // Add user_id filtering for multi-user support
+    if (filters.user_id) {
+      sql += " AND user_id = ?";
+      params.push(filters.user_id);
+    }
+
     if (filters.job_type) {
       sql += " AND job_type = ?";
       params.push(filters.job_type);
@@ -1519,12 +1772,18 @@ export class DatabaseManager {
     await this.run("DELETE FROM job_statuses WHERE job_id = ?", [jobId]);
   }
 
-  async deleteJobsOlderThan(date: Date): Promise<number> {
+  async deleteJobsOlderThan(date: Date, user_id?: string): Promise<number> {
     const timestamp = Math.floor(date.getTime() / 1000);
-    const result = await this.execute(
-      "DELETE FROM job_statuses WHERE created_at < ?",
-      [timestamp]
-    );
+    let sql = "DELETE FROM job_statuses WHERE created_at < ?";
+    const params: any[] = [timestamp];
+    
+    // Add user filtering if provided
+    if (user_id) {
+      sql += " AND user_id = ?";
+      params.push(user_id);
+    }
+    
+    const result = await this.execute(sql, params);
     return result?.changes || 0;
   }
 
@@ -1902,12 +2161,28 @@ export class DatabaseManager {
   }
 
   // Utility method to get emails eligible for cleanup
+  /**
+   * Get emails eligible for cleanup with user filtering
+   * @param policy Cleanup policy to determine eligible emails
+   * @param limit Maximum number of emails to return
+   * @param userId Optional user ID to filter emails (for multi-user support)
+   * @returns Array of email indexes eligible for cleanup
+   */
   async getEmailsForCleanup(
     policy: import("../types/index.js").CleanupPolicy,
-    limit?: number
+    limit?: number,
+    userId?: string
   ): Promise<EmailIndex[]> {
     let sql = "SELECT * FROM email_index WHERE 1=1";
     const params: any[] = [];
+    
+    // Apply user filtering for multi-user support
+    // Use either the provided userId or the instance's userId
+    const userIdToUse = userId || this.userId;
+    if (userIdToUse) {
+      sql += " AND user_id = ?";
+      params.push(userIdToUse);
+    }
 
     // Apply policy criteria
     if (policy.criteria.age_days_min) {

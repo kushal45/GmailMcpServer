@@ -27,8 +27,8 @@ export class LabelClassifier implements ILabelClassifier {
   /**
    * Classifies email labels into categories
    */
-  async classifyLabels(labels: string[]): Promise<LabelClassification> {
-    const cacheKey = this.generateCacheKey(labels);
+  async classifyLabels(labels: string[], userId: string): Promise<LabelClassification> {
+    const cacheKey = this.generateCacheKey(labels,userId);
     
     // Check cache first if enabled
     if (this.config.caching.enabled && this.cacheManager) {
@@ -79,7 +79,7 @@ export class LabelClassifier implements ILabelClassifier {
     if (!this.isEmailAnalysisContext(context)) {
       throw new Error('LabelClassifier requires EmailAnalysisContext');
     }
-    return this.classifyLabels(context.labels);
+    return this.classifyLabels(context.labels,context.userId);
   }
 
   /**
@@ -318,10 +318,10 @@ export class LabelClassifier implements ILabelClassifier {
   /**
    * Generate cache key for labels
    */
-  private generateCacheKey(labels: string[]): string {
+  private generateCacheKey(labels: string[],userId:string): string {
     const sortedLabels = [...labels].sort();
     const labelsStr = sortedLabels.join(',');
-    return `labels:${Buffer.from(labelsStr).toString('base64')}`;
+    return `labels:${userId}:${Buffer.from(labelsStr).toString('base64')}`;
   }
 
   /**
@@ -348,7 +348,7 @@ export class LabelClassifier implements ILabelClassifier {
     if (!this.cacheManager) return;
     
     try {
-      this.cacheManager.set(cacheKey, result, this.config.caching.ttl);
+      this.cacheManager.set(cacheKey, result, String(this.config.caching.ttl));
     } catch (error) {
       logger.error('LabelClassifier: Cache storage failed', { 
         cacheKey, 

@@ -13,9 +13,24 @@ export function registerJobTools() {
         id: {
           type: 'string',
           description: 'Job ID to retrieve'
+        },
+        user_context: {
+          type: 'object',
+          description: 'User context for access control',
+          properties: {
+            user_id: {
+              type: 'string',
+              description: 'ID of the user making the request'
+            },
+            session_id: {
+              type: 'string',
+              description: 'Session ID of the user making the request'
+            }
+          },
+          required: ['user_id', 'session_id']
         }
       },
-      required: ['id']
+      required: ['id', 'user_context']
     }
   };
 
@@ -44,9 +59,24 @@ export function registerJobTools() {
           type: 'string',
           enum: ['pending', 'running', 'completed', 'failed'],
           description: 'Filter jobs by status'
+        },
+        user_context: {
+          type: 'object',
+          description: 'User context for access control',
+          properties: {
+            user_id: {
+              type: 'string',
+              description: 'ID of the user making the request'
+            },
+            session_id: {
+              type: 'string',
+              description: 'Session ID of the user making the request'
+            }
+          },
+          required: ['user_id', 'session_id']
         }
     },
-    required:["limit"]
+    required:["limit", "user_context"]
   }
 };
 
@@ -59,9 +89,24 @@ export function registerJobTools() {
         id: {
           type: 'string',
           description: 'Job ID to cancel'
+        },
+        user_context: {
+          type: 'object',
+          description: 'User context for access control',
+          properties: {
+            user_id: {
+              type: 'string',
+              description: 'ID of the user making the request'
+            },
+            session_id: {
+              type: 'string',
+              description: 'Session ID of the user making the request'
+            }
+          },
+          required: ['user_id', 'session_id']
         }
       },
-      required: ['id']
+      required: ['id', 'user_context']
     }
   };
   // Register tools with the registry

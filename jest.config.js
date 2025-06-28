@@ -47,5 +47,8 @@ export default {
   maxWorkers: 1,
   detectOpenHandles: true,
   forceExit: true,
-  verbose: true
+  verbose: true,
+  // Additional options to help with cleanup
+  openHandlesTimeout: 1000,
+  workerIdleMemoryLimit: '512MB'
 };

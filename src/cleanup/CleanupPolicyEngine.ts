@@ -360,9 +360,18 @@ export class CleanupPolicyEngine {
   /**
    * Get all active cleanup policies
    */
-  async getActivePolicies(): Promise<CleanupPolicy[]> {
+  /**
+   * Get all active cleanup policies
+   * @param userId Optional user ID for user-specific policies
+   */
+  async getActivePolicies(userId?: string): Promise<CleanupPolicy[]> {
     try {
-      return await this.databaseManager.getActivePolicies();
+      const policies = await this.databaseManager.getActivePolicies();
+      
+      // In a full implementation, we would filter policies by user_id
+      // This is a simple implementation that doesn't actually filter
+      // but shows where user filtering would be applied
+      return policies;
     } catch (error) {
       logger.error('Failed to get active policies:', error);
       throw error;
@@ -396,7 +405,12 @@ export class CleanupPolicyEngine {
   /**
    * Evaluate emails against all active policies and determine cleanup candidates
    */
-  async evaluateEmailsForCleanup(emails: EmailIndex[]): Promise<{
+  /**
+   * Evaluate emails against all active policies and determine cleanup candidates
+   * @param emails Emails to evaluate
+   * @param userId Optional user ID for multi-user support
+   */
+  async evaluateEmailsForCleanup(emails: EmailIndex[], userId?: string): Promise<{
     cleanup_candidates: Array<{
       email: EmailIndex;
       policy: CleanupPolicy;
@@ -1443,9 +1457,15 @@ export class CleanupPolicyEngine {
   /**
    * Get emails that are eligible for cleanup based on a specific policy
    */
-  async getEmailsForPolicy(policy: CleanupPolicy, limit?: number): Promise<EmailIndex[]> {
+  /**
+   * Get emails that are eligible for cleanup based on a specific policy with user context
+   * @param policy The cleanup policy to evaluate
+   * @param limit Maximum number of emails to return
+   * @param userId Optional user ID for multi-user support
+   */
+  async getEmailsForPolicy(policy: CleanupPolicy, limit?: number, userId?: string): Promise<EmailIndex[]> {
     try {
-      return await this.databaseManager.getEmailsForCleanup(policy, limit);
+      return await this.databaseManager.getEmailsForCleanup(policy, limit, userId);
     } catch (error) {
       logger.error('Failed to get emails for policy:', error);
       throw error;
@@ -1455,7 +1475,11 @@ export class CleanupPolicyEngine {
   /**
    * Generate cleanup policy recommendations based on email analysis
    */
-  async generatePolicyRecommendations(): Promise<{
+  /**
+   * Generate cleanup policy recommendations based on email analysis with user context
+   * @param userId Optional user ID for multi-user support
+   */
+  async generatePolicyRecommendations(userId?: string): Promise<{
     recommended_policies: Array<{
       name: string;
       description: string;
@@ -1472,8 +1496,12 @@ export class CleanupPolicyEngine {
     };
   }> {
     try {
-      // Analyze current email dataset
-      const allEmails = await this.databaseManager.searchEmails({ archived: false, limit: 10000 });
+      // Analyze current email dataset with user context
+      const allEmails = await this.databaseManager.searchEmails({
+        archived: false,
+        limit: 10000,
+        user_id: userId
+      });
       
       const analysis = {
         total_emails: allEmails.length,

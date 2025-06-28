@@ -14,7 +14,9 @@ export const deleteToolConfigs: ToolConfig[] = [
       skip_archived: ParameterTypes.boolean('Skip archived emails', true),
       dry_run: ParameterTypes.boolean('Preview what would be deleted', false),
       max_count: ParameterTypes.number('Maximum number of emails to delete', 10),
-    }
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'empty_trash',
@@ -23,7 +25,9 @@ export const deleteToolConfigs: ToolConfig[] = [
     parameters: {
       dry_run: ParameterTypes.boolean('Preview what would be deleted', false),
       max_count: ParameterTypes.number('Maximum number of emails to delete', 10),
-    }
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'trigger_cleanup',
@@ -33,20 +37,28 @@ export const deleteToolConfigs: ToolConfig[] = [
       policy_id: ParameterTypes.string('ID of the cleanup policy to execute'),
       dry_run: ParameterTypes.boolean('Preview what would be cleaned up', false),
       max_emails: ParameterTypes.number('Maximum number of emails to process'),
-      force: ParameterTypes.boolean('Force execution even if policy is disabled', false)
-    }
+      force: ParameterTypes.boolean('Force execution even if policy is disabled', false),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'get_cleanup_status',
     description: 'Get current status of the cleanup automation system',
     category: 'cleanup',
-    parameters: {}
+    parameters: {
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'get_system_health',
     description: 'Get current system health metrics and status',
     category: 'cleanup',
-    parameters: {}
+    parameters: {
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'create_cleanup_policy',
@@ -59,8 +71,10 @@ export const deleteToolConfigs: ToolConfig[] = [
       criteria: ParameterTypes.object({}, 'Cleanup criteria configuration'),
       action: ParameterTypes.object({}, 'Action to take (delete or archive)'),
       safety: ParameterTypes.object({}, 'Safety configuration'),
-      schedule: ParameterTypes.object({}, 'Optional schedule configuration')
-    }
+      schedule: ParameterTypes.object({}, 'Optional schedule configuration'),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'update_cleanup_policy',
@@ -68,24 +82,30 @@ export const deleteToolConfigs: ToolConfig[] = [
     category: 'cleanup',
     parameters: {
       policy_id: ParameterTypes.string('ID of the policy to update'),
-      updates: ParameterTypes.object({}, 'Policy updates to apply')
-    }
+      updates: ParameterTypes.object({}, 'Policy updates to apply'),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['policy_id', 'updates', 'user_context']
   },
   {
     name: 'list_cleanup_policies',
     description: 'List all cleanup policies',
     category: 'cleanup',
     parameters: {
-      active_only: ParameterTypes.boolean('Only return active policies', false)
-    }
+      active_only: ParameterTypes.boolean('Only return active policies', false),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'delete_cleanup_policy',
     description: 'Delete a cleanup policy',
     category: 'cleanup',
     parameters: {
-      policy_id: ParameterTypes.string('ID of the policy to delete')
-    }
+      policy_id: ParameterTypes.string('ID of the policy to delete'),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['policy_id', 'user_context']
   },
   {
     name: 'create_cleanup_schedule',
@@ -96,30 +116,39 @@ export const deleteToolConfigs: ToolConfig[] = [
       type: ParameterTypes.string('Schedule type (daily, weekly, monthly, interval, cron)'),
       expression: ParameterTypes.string('Schedule expression (time, interval, or cron)'),
       policy_id: ParameterTypes.string('ID of the policy to schedule'),
-      enabled: ParameterTypes.boolean('Whether the schedule is enabled', true)
-    }
+      enabled: ParameterTypes.boolean('Whether the schedule is enabled', true),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['name', 'type', 'expression', 'policy_id', 'user_context']
   },
   {
     name: 'update_cleanup_automation_config',
     description: 'Update cleanup automation configuration',
     category: 'cleanup',
     parameters: {
-      config: ParameterTypes.object({}, 'Automation configuration updates')
-    }
+      config: ParameterTypes.object({}, 'Automation configuration updates'),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['config', 'user_context']
   },
   {
     name: 'get_cleanup_metrics',
     description: 'Get cleanup system metrics and analytics',
     category: 'cleanup',
     parameters: {
-      hours: ParameterTypes.number('Number of hours of history to include', 24)
-    }
+      hours: ParameterTypes.number('Number of hours of history to include', 24),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   {
     name: 'get_cleanup_recommendations',
     description: 'Get recommended cleanup policies based on email analysis',
     category: 'cleanup',
-    parameters: {}
+    parameters: {
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   }
 ];
 

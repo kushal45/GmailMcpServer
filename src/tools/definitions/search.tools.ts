@@ -13,8 +13,10 @@ export const searchToolConfigs: ToolConfig[] = [
       sender: ParameterTypes.string('Filter by sender email address'),
       has_attachments: ParameterTypes.boolean('Filter emails with attachments'),
       archived: ParameterTypes.boolean('Include archived emails'),
-      limit: ParameterTypes.number('Maximum number of results', 1, 500, 50)
-    }
+      limit: ParameterTypes.number('Maximum number of results', 1, 500, 50),
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   },
   
   {
@@ -23,16 +25,20 @@ export const searchToolConfigs: ToolConfig[] = [
     category: 'search',
     parameters: {
       name: ParameterTypes.string('Name for the saved search'),
-      criteria: ParameterTypes.object({}, 'Search criteria to save')
+      criteria: ParameterTypes.object({}, 'Search criteria to save'),
+      user_context: ParameterTypes.userContext()
     },
-    required: ['name', 'criteria']
+    required: ['name', 'criteria', 'user_context']
   },
   
   {
     name: 'list_saved_searches',
     description: 'Lists all saved searches',
     category: 'search',
-    parameters: {}
+    parameters: {
+      user_context: ParameterTypes.userContext()
+    },
+    required: ['user_context']
   }
 ];
 

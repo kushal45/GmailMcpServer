@@ -11,6 +11,14 @@ export const authToolConfigs: ToolConfig[] = [
         'Additional OAuth scopes (default includes Gmail read/write)'
       )
     }
+  },
+  {
+    name: 'poll_user_context',
+    description: 'Polls for the user context (user_id, session_id) after OAuth completion using the provided state.',
+    category: 'authentication',
+    parameters: {
+      state: ParameterTypes.string('State parameter returned from authenticate tool'),
+    }
   }
 ];
 

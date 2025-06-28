@@ -198,6 +198,7 @@ export class CleanupAutomationEngine {
     dry_run?: boolean;
     max_emails?: number;
     force?: boolean;
+    user_id?: string; // Add user_id parameter for multi-user support
   } = {}): Promise<string> {
     try {
       
@@ -248,13 +249,14 @@ export class CleanupAutomationEngine {
           current_batch: 0,
           total_batches: 0
         },
-        created_at: new Date()
+        created_at: new Date(),
+        user_id: options.user_id // Include user_id for job isolation
       };
 
       // **FIX**: Use proper transaction management for database operations
       try {
-        // Add job to queue first
-        await this.jobQueue.addJob(jobId);
+        // Add job to queue first with user context if provided
+        await this.jobQueue.addJob(jobId, options.user_id);
         
         // Insert job to database with verification
         await this.databaseManager.insertCleanupJob(cleanupJob);
@@ -269,7 +271,8 @@ export class CleanupAutomationEngine {
           job_id: jobId,
           policy_id: policyId,
           dry_run: options.dry_run,
-          max_emails: options.max_emails
+          max_emails: options.max_emails,
+          user_id: options.user_id || 'system' // Log user context
         });
 
         return jobId;
@@ -357,20 +360,26 @@ export class CleanupAutomationEngine {
   /**
    * Process a cleanup job
    */
-  async processCleanupJob(jobId: string): Promise<CleanupResults> {
+  async processCleanupJob(jobId: string, user_id?: string): Promise<CleanupResults> {
     try {
-      logger.info('processCleanupJob starting', { jobId });
+      logger.info('processCleanupJob starting', { jobId, user_id });
       
       const job = await this.databaseManager.getCleanupJob(jobId);
       logger.info('Job retrieved from database', {
         found: !!job,
         jobId: job?.job_id,
         policy_id: job?.cleanup_metadata?.policy_id,
-        job_type: job?.job_type
+        job_type: job?.job_type,
+        job_user_id: job?.user_id
       });
       
       if (!job) {
         throw new Error(`Job not found: ${jobId}`);
+      }
+      
+      // Check if user has permission to process this job
+      if (user_id && job.user_id && job.user_id !== user_id) {
+        throw new Error(`User ${user_id} does not have permission to process job ${jobId}`);
       }
 
       // Update job status
@@ -459,7 +468,15 @@ export class CleanupAutomationEngine {
     // Get emails eligible for cleanup
     const maxEmails = job.cleanup_metadata!.target_emails;
     
-    const eligibleEmails = await this.databaseManager.getEmailsForCleanup(policy, maxEmails);
+    // We need to modify the policy to include user filtering criteria
+    const policyWithUser = { ...policy };
+    
+    // Get emails eligible for cleanup with user filtering
+    const eligibleEmails = await this.databaseManager.getEmailsForCleanup(
+      policyWithUser,
+      maxEmails,
+      job.user_id
+    );
     
     if (eligibleEmails.length === 0) {
       logger.warn('🔍 DIAGNOSTIC: No eligible emails found, returning early', {
@@ -524,7 +541,10 @@ export class CleanupAutomationEngine {
           });
 
           // Process batch
-          const batchResults = await this.processBatch(batch);
+          const batchResults = await this.processBatch(batch, {
+            user_id: job.user_id || this.databaseManager.getUserId() || 'default',
+            session_id: 'default'
+          });
           
           emailsProcessed += batch.length;
           emailsDeleted += batchResults.deleted;
@@ -620,7 +640,7 @@ export class CleanupAutomationEngine {
     email: EmailIndex;
     policy: CleanupPolicy;
     recommended_action: 'archive' | 'delete';
-  }>): Promise<{
+  }>, userContext?: { user_id: string; session_id: string }): Promise<{
     deleted: number;
     archived: number;
     storage_freed: number;
@@ -652,7 +672,7 @@ export class CleanupAutomationEngine {
           },
           dryRun: false,
           skipArchived: true,
-        });
+        }, userContext || { user_id: this.databaseManager.getUserId() || 'default', session_id: 'default' });
         
         deleted = deleteResult.deleted;
         storageFreed += deleteEmails.reduce((sum, email) => sum + (email.size || 0), 0);
@@ -667,7 +687,7 @@ export class CleanupAutomationEngine {
       try {
         // Mark emails as archived in database
         const archiveIds = archiveEmails.map(email => email.id);
-        await this.databaseManager.markEmailsAsDeleted(archiveIds);
+        await this.databaseManager.markEmailsAsDeleted(archiveIds, userContext?.user_id);
         
         archived = archiveEmails.length;
         storageFreed += archiveEmails.reduce((sum, email) => sum + (email.size || 0), 0);
@@ -738,6 +758,9 @@ export class CleanupAutomationEngine {
   /**
    * Start continuous cleanup
    */
+  /**
+   * Start continuous cleanup processing
+   */
   private async startContinuousCleanup(): Promise<void> {
     if (this.continuousCleanupActive) return;
 
@@ -757,8 +780,11 @@ export class CleanupAutomationEngine {
           return;
         }
 
-        // Trigger continuous cleanup job
-        await this.triggerContinuousCleanupJob();
+        // For multi-user support, trigger cleanup for each user
+        const userIds = await this.getAllUserIds();
+        for (const userId of userIds) {
+          await this.triggerContinuousCleanupJob(userId);
+        }
       } catch (error) {
         logger.error('Continuous cleanup iteration failed:', error);
       }
@@ -801,7 +827,11 @@ export class CleanupAutomationEngine {
   /**
    * Trigger a continuous cleanup job
    */
-  private async triggerContinuousCleanupJob(): Promise<void> {
+  /**
+   * Trigger a continuous cleanup job with user context
+   * @param user_id Optional user ID for multi-user support
+   */
+  private async triggerContinuousCleanupJob(user_id?: string): Promise<void> {
     const jobId = `cleanup_continuous_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     const cleanupJob: CleanupJob = {
@@ -826,10 +856,11 @@ export class CleanupAutomationEngine {
         current_batch: 0,
         total_batches: 0
       },
-      created_at: new Date()
+      created_at: new Date(),
+      user_id: user_id // Add user_id for multi-user support
     };
 
-    await this.jobQueue.addJob(jobId);
+    await this.jobQueue.addJob(jobId, user_id);
     await this.databaseManager.insertCleanupJob(cleanupJob);
   }
 
@@ -846,9 +877,17 @@ export class CleanupAutomationEngine {
       const criticalThreshold = this.config.event_triggers.storage_threshold.critical_threshold_percent;
 
       if (storagePercent >= criticalThreshold) {
-        await this.triggerEmergencyCleanup('storage_critical');
+        // Get a list of all user IDs for multi-user emergency cleanup
+        const userIds = await this.getAllUserIds();
+        for (const userId of userIds) {
+          await this.triggerEmergencyCleanup('storage_critical', userId);
+        }
       } else if (storagePercent >= warningThreshold) {
-        await this.triggerEventCleanup('storage_warning');
+        // Get a list of all user IDs for multi-user event cleanup
+        const userIds = await this.getAllUserIds();
+        for (const userId of userIds) {
+          await this.triggerEventCleanup('storage_warning', userId);
+        }
       }
     }
 
@@ -859,7 +898,11 @@ export class CleanupAutomationEngine {
 
       if (queryTime > this.config.event_triggers.performance_threshold.query_time_threshold_ms ||
           cacheHitRate < this.config.event_triggers.performance_threshold.cache_hit_rate_threshold) {
-        await this.triggerEventCleanup('performance_degradation');
+        // Get a list of all user IDs for multi-user event cleanup
+        const userIds = await this.getAllUserIds();
+        for (const userId of userIds) {
+          await this.triggerEventCleanup('performance_degradation', userId);
+        }
       }
     }
   }
@@ -867,7 +910,12 @@ export class CleanupAutomationEngine {
   /**
    * Trigger event-based cleanup
    */
-  private async triggerEventCleanup(trigger: string): Promise<void> {
+  /**
+   * Trigger event-based cleanup with user context
+   * @param trigger Type of event that triggered the cleanup
+   * @param user_id Optional user ID for multi-user support
+   */
+  private async triggerEventCleanup(trigger: string, user_id?: string): Promise<void> {
     const jobId = `cleanup_event_${trigger}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     const cleanupJob: CleanupJob = {
@@ -892,33 +940,44 @@ export class CleanupAutomationEngine {
         current_batch: 0,
         total_batches: 0
       },
-      created_at: new Date()
+      created_at: new Date(),
+      user_id: user_id // Add user_id for multi-user support
     };
 
-    await this.jobQueue.addJob(jobId);
+    await this.jobQueue.addJob(jobId, user_id);
     await this.databaseManager.insertCleanupJob(cleanupJob);
 
-    logger.warn('Event-triggered cleanup initiated', { trigger, job_id: jobId });
+    logger.warn('Event-triggered cleanup initiated', { trigger, job_id: jobId, user_id: user_id || 'system' });
   }
 
   /**
    * Trigger emergency cleanup
    */
-  private async triggerEmergencyCleanup(trigger: string): Promise<void> {
+  /**
+   * Trigger emergency cleanup with user context
+   * @param trigger Type of emergency that triggered the cleanup
+   * @param user_id Optional user ID for multi-user support
+   */
+  private async triggerEmergencyCleanup(trigger: string, user_id?: string): Promise<void> {
     const emergencyPolicies = this.config.event_triggers.storage_threshold.emergency_policies;
     
     for (const policyId of emergencyPolicies) {
       try {
         await this.triggerManualCleanup(policyId, {
           max_emails: 1000,
-          force: true
+          force: true,
+          user_id: user_id // Pass user_id for multi-user support
         });
       } catch (error) {
         logger.error(`Emergency cleanup failed for policy ${policyId}:`, error);
       }
     }
 
-    logger.error('Emergency cleanup triggered', { trigger, policies: emergencyPolicies });
+    logger.error('Emergency cleanup triggered', {
+      trigger,
+      policies: emergencyPolicies,
+      user_id: user_id || 'system'
+    });
   }
 
   /**
@@ -945,6 +1004,33 @@ export class CleanupAutomationEngine {
     } catch (error) {
       logger.error('Failed to save configuration to database:', error);
       throw error;
+    }
+  }
+  
+  /**
+   * Helper method to get all user IDs from the database
+   * Used for multi-user cleanup operations
+   */
+  private async getAllUserIds(): Promise<string[]> {
+    try {
+      // Query distinct user_ids from email_index table
+      const users = await this.databaseManager.queryAll<{user_id: string}>(
+        "SELECT DISTINCT user_id FROM email_index WHERE user_id IS NOT NULL"
+      );
+      
+      // Extract user_ids from results
+      const userIds = users.map(user => user.user_id);
+      
+      // If no users found, return a default user ID
+      if (userIds.length === 0) {
+        return [this.databaseManager.getUserId() || 'default'];
+      }
+      
+      return userIds;
+    } catch (error) {
+      logger.error('Failed to get user IDs:', error);
+      // Fallback to system user ID
+      return [this.databaseManager.getUserId() || 'default'];
     }
   }
 }

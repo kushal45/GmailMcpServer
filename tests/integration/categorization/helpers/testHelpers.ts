@@ -1,5 +1,4 @@
 import { jest } from '@jest/globals';
-import type { MockedFunction } from 'jest-mock';
 import { EmailIndex, PriorityCategory } from '../../../../src/types/index.js';
 import { DatabaseManager } from '../../../../src/database/DatabaseManager.js';
 import { CacheManager } from '../../../../src/cache/CacheManager.js';
@@ -7,29 +6,138 @@ import { CategorizationEngine } from '../../../../src/categorization/Categorizat
 import { CategorizationWorker } from '../../../../src/categorization/CategorizationWorker.js';
 import { JobQueue } from '../../../../src/database/JobQueue.js';
 import { JobStatusStore } from '../../../../src/database/JobStatusStore.js';
-import { Job, JobStatus } from '../../../../src/database/jobStatusTypes.js';
+import { Job, JobStatus } from '../../../../src/types/index.js';
 import { CategorizationSystemConfig } from '../../../../src/categorization/config/CategorizationConfig.js';
 import { AnalysisMetrics } from '../../../../src/categorization/types.js';
-import fs from 'fs/promises';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { logger } from '../../../../src/utils/logger.js';
 import { Logger } from 'winston';
+import { DatabaseMigrationManager } from '../../../../src/database/DatabaseMigrationManager.js';
+import { userDatabaseManagerFactory } from '../../../../src/database/UserDatabaseManagerFactory.js';
+import { UserDatabaseManagerFactory } from '../../../../src/database/UserDatabaseManagerFactory.js';
+import fs from 'fs';
+import { DatabaseRegistry } from '../../../../src/database/DatabaseRegistry.js';
+
+// --- PER-TEST DB ISOLATION ---
+let testDbBaseDir: string | null = null;
+
+export async function setupIsolatedTestDb(testName: string) {
+  // Create a unique temp dir for this test
+  testDbBaseDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), `gmail-mcp-test-${testName}-`));
+  process.env.STORAGE_PATH = testDbBaseDir;
+  // Reset singletons so they use the new STORAGE_PATH
+  DatabaseRegistry.resetInstance();
+  UserDatabaseManagerFactory.resetInstance();
+  // Initialize registry and factory
+  const registry = DatabaseRegistry.getInstance(testDbBaseDir);
+  await registry.initialize();
+  const factory = UserDatabaseManagerFactory.getInstance();
+  await factory.initialize();
+  return { registry, factory, testDbBaseDir };
+}
+
+export async function cleanupIsolatedTestDb() {
+  if (testDbBaseDir) {
+    try {
+      await fsPromises.rm(testDbBaseDir, { recursive: true, force: true });
+    } catch (e) {
+      // Ignore errors
+    }
+    testDbBaseDir = null;
+  }
+}
 
 // Create test database manager
 let testDbPath: string;
 let testDbDir: string;
 
+// Track all created user DB paths for robust cleanup
+const createdUserDbPaths = new Set<string>();
+const userDbPathMap = new Map<string, string>(); // userId -> dbDir
+
+// --- SINGLETON RESET UTILS FOR TEST ISOLATION ---
+// Add this utility if not present in DatabaseManager
+export function resetAllSingletons() {
+  if (typeof DatabaseManager.resetInstance === 'function') {
+    DatabaseManager.resetInstance();
+  } else if ('singletonInstance' in DatabaseManager) {
+    // Fallback for environments where resetInstance is not present
+    (DatabaseManager as any).singletonInstance = null;
+    console.log('[DIAGNOSTIC] (resetAllSingletons) Fallback: DatabaseManager.singletonInstance set to null');
+  }
+  if (typeof JobStatusStore.resetInstance === 'function') {
+    JobStatusStore.resetInstance();
+  }
+}
+
 export async function createTestDatabaseManager(): Promise<DatabaseManager> {
+  // Reset all singletons before DB creation for test isolation
+  resetAllSingletons();
   // Create a unique test database in temp directory
-  testDbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gmail-test-'));
+  testDbDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'gmail-test-'));
   testDbPath = path.join(testDbDir, 'test-emails.db');
   
   // Set the storage path environment variable to our test directory
   process.env.STORAGE_PATH = testDbDir;
   
-  const dbManager = DatabaseManager.getInstance();
-  await dbManager.initialize(testDbPath);
+  // Always create a new DatabaseManager instance for each test
+  const dbManager = new DatabaseManager(undefined);
+  await dbManager.initialize(testDbPath, true);
+
+  // Log DB path and instance ID before migration
+  console.log('[DIAGNOSTIC] (before migration) DB path:', testDbPath);
+  console.log('[DIAGNOSTIC] (before migration) DB instance ID:', dbManager.getInstanceId());
+  try {
+    const preColumns = await dbManager.queryAll("PRAGMA table_info(email_index)");
+    console.log('[DIAGNOSTIC] (before migration) email_index columns:', preColumns.map((col: any) => col.name));
+  } catch (e) {
+    console.log('[DIAGNOSTIC] (before migration) email_index columns: ERROR', e);
+  }
+  try {
+    const preMigrations = await dbManager.queryAll("SELECT * FROM migrations");
+    console.log('[DIAGNOSTIC] (before migration) migrations table:', preMigrations);
+  } catch (e) {
+    console.log('[DIAGNOSTIC] (before migration) migrations table: ERROR', e);
+  }
+
+  // Check if migrations table exists and if migration version 1 is present
+  let shouldRunMigration = true;
+  try {
+    const tables = await dbManager.queryAll("SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'");
+    if (tables.length > 0) {
+      const versionRows = await dbManager.queryAll("SELECT version FROM migrations WHERE version = 1");
+      if (versionRows.length > 0) {
+        shouldRunMigration = false;
+        console.log('[DIAGNOSTIC] Migration version 1 already applied, skipping migration.');
+      }
+    }
+  } catch (e) {
+    // If any error, assume migration needs to run
+    shouldRunMigration = true;
+  }
+
+  if (shouldRunMigration) {
+    const migrationManager = DatabaseMigrationManager.getInstance();
+    await migrationManager.initialize();
+    await migrationManager.migrateDatabase(dbManager);
+    console.log('[DIAGNOSTIC] Ran migration for test DB.');
+  }
+
+  // Log schema and migrations table after migration
+  const columns = await dbManager.queryAll("PRAGMA table_info(email_index)");
+  console.log('[DIAGNOSTIC] (after migration) email_index columns:', columns.map((col: any) => col.name));
+  try {
+    const postMigrations = await dbManager.queryAll("SELECT * FROM migrations");
+    console.log('[DIAGNOSTIC] (after migration) migrations table:', postMigrations);
+  } catch (e) {
+    console.log('[DIAGNOSTIC] (after migration) migrations table: ERROR', e);
+  }
+  
+  // Log DB path and instance ID after creation
+  console.log('[DIAGNOSTIC] (after DB create) DB path:', testDbPath);
+  console.log('[DIAGNOSTIC] (after DB create) DB instance ID:', dbManager.getInstanceId());
   
   return dbManager;
 }
@@ -38,23 +146,50 @@ export async function createTestDatabaseManager(): Promise<DatabaseManager> {
 export async function cleanupTestDatabase(dbManager: DatabaseManager): Promise<void> {
   if (dbManager) {
     await dbManager.close();
+    if (typeof DatabaseManager.resetInstance === 'function') {
+      DatabaseManager.resetInstance();
+    } else if ('singletonInstance' in DatabaseManager) {
+      (DatabaseManager as any).singletonInstance = null;
+      console.log('[DIAGNOSTIC] (cleanupTestDatabase) Fallback: DatabaseManager.singletonInstance set to null');
+    }
+    if (typeof JobStatusStore.resetInstance === 'function') {
+      JobStatusStore.resetInstance();
+    }
+    console.log('[DIAGNOSTIC] (after cleanup) Reset all singletons.');
   }
-  
-  // Remove test database directory
+  // Remove test database directory and file
   if (testDbDir) {
     try {
-      await fs.rm(testDbDir, { recursive: true, force: true });
+      await fsPromises.rm(testDbDir, { recursive: true, force: true });
+      console.log('[DIAGNOSTIC] Cleaned up test DB directory:', testDbDir);
     } catch (error) {
-      console.error('Failed to cleanup test database:', error);
+      console.error('[DIAGNOSTIC] Failed to cleanup test database:', error);
     }
   }
 }
 
-// Seed test data into database
-export async function seedTestData(dbManager: DatabaseManager, emails: EmailIndex[]): Promise<void> {
-  // Use bulk insert for efficiency
-  if (emails.length > 0) {
-    await dbManager.bulkUpsertEmailIndex(emails);
+// Robust multi-user aware seeding: always use the per-user DatabaseManager from the factory
+export async function seedTestData(
+  emails: EmailIndex[],
+  userDbManagerFactory: import('../../../../src/database/UserDatabaseManagerFactory.js').UserDatabaseManagerFactory,
+  userId?:string
+): Promise<void> {
+  // If a userId is provided, seed all emails into that user's DB (single-user mode)
+  if (userId) {
+    const dbManager = await userDbManagerFactory.getUserDatabaseManager(userId);
+    await dbManager.bulkUpsertEmailIndex(emails, userId);
+    return;
+  }
+  // Otherwise, group emails by user_id and seed each group into the correct per-user DB
+  const emailsByUser: Record<string, EmailIndex[]> = {};
+  for (const email of emails) {
+    const uid = email.user_id || 'default';
+    if (!emailsByUser[uid]) emailsByUser[uid] = [];
+    emailsByUser[uid].push(email);
+  }
+  for (const uid of Object.keys(emailsByUser)) {
+    const dbManager = await userDbManagerFactory.getUserDatabaseManager(uid);
+    await dbManager.bulkUpsertEmailIndex(emailsByUser[uid], uid);
   }
 }
 
@@ -84,21 +219,24 @@ export function createMockCacheManager(): CacheManager {
   } as unknown as CacheManager;
 }
 
-// Create CategorizationEngine with real database
-export async function createCategorizationEngineWithRealDb(): Promise<{
+/**
+ * Create CategorizationEngine with real database (multi-user aware, per-test factory)
+ * @param userDbManagerFactory The per-test UserDatabaseManagerFactory instance
+ */
+export async function createCategorizationEngineWithRealDb(
+  userDbManagerFactory: UserDatabaseManagerFactory
+): Promise<{
   categorizationEngine: CategorizationEngine;
-  dbManager: DatabaseManager;
   cacheManager: CacheManager;
+  userDbManagerFactory: UserDatabaseManagerFactory;
 }> {
-  const dbManager = await createTestDatabaseManager();
   const cacheManager = createMockCacheManager();
-  
-  const categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
-  
+  // Use the per-test factory for all multi-user aware CategorizationEngine instantiations
+  const categorizationEngine = new CategorizationEngine(userDbManagerFactory, cacheManager);
   return {
     categorizationEngine,
-    dbManager,
-    cacheManager
+    cacheManager,
+    userDbManagerFactory
   };
 }
 
@@ -475,12 +613,10 @@ export function generatePerformanceTestEmails(count: number): EmailIndex[] {
 
 // Job Processing Helpers
 export async function waitForJobCompletion(jobId: string, options: { timeout?: number } = {}): Promise<Job> {
-  const timeout = options.timeout || 1000;
-  const startTime = Date.now();
-  const jobStatusStore = JobStatusStore.getInstance();
-  
-  while (Date.now() - startTime < timeout) {
-    const job = await jobStatusStore.getJobStatus(jobId);
+  const timeout = options.timeout ?? 15000; // Increased default timeout to 15s
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const job = await JobStatusStore.getInstance().getJobStatus(jobId);
     if (job && [JobStatus.COMPLETED, JobStatus.FAILED].includes(job.status)) {
       return job;
     }
@@ -489,12 +625,10 @@ export async function waitForJobCompletion(jobId: string, options: { timeout?: n
   throw new Error(`Job ${jobId} did not complete within ${timeout}ms`);
 }
 
-export async function waitForJobStatus(jobId: string, status: JobStatus, timeout: number = 30000): Promise<Job> {
-  const startTime = Date.now();
-  const jobStatusStore = JobStatusStore.getInstance();
-  
-  while (Date.now() - startTime < timeout) {
-    const job = await jobStatusStore.getJobStatus(jobId);
+export async function waitForJobStatus(jobId: string, status: JobStatus, timeout: number = 15000): Promise<Job> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const job = await JobStatusStore.getInstance().getJobStatus(jobId);
     if (job && job.status === status) {
       return job;
     }
@@ -510,12 +644,12 @@ export async function createJobAndWaitForCompletion(params: any): Promise<{ job:
   return { job, result: job.results };
 }
 
-export async function submitMultipleJobs(jobParams: any[]): Promise<string[]> {
+export async function submitMultipleJobs(jobParams: any[], user_id?: string): Promise<string[]> {
   const jobStatusStore = JobStatusStore.getInstance();
   const jobIds: string[] = [];
   
   for (const params of jobParams) {
-    const jobId = await jobStatusStore.createJob('categorization', params);
+    const jobId = await jobStatusStore.createJob('categorization', params, user_id);
     jobIds.push(jobId);
   }
   
@@ -742,7 +876,7 @@ export async function seedRealisticTestData(
     yearRange: { start: 2022, end: 2024 }
   });
   
-  await seedTestData(dbManager, emails);
+  await seedTestData(emails, userDatabaseManagerFactory);
   return emails;
 }
 
@@ -879,15 +1013,20 @@ export async function createWorkerWithRealComponents(): Promise<{
   dbManager: DatabaseManager;
   cacheManager: CacheManager;
 }> {
+  // Reset all singletons before creating components
+  resetAllSingletons();
   const dbManager = await createTestDatabaseManager();
-  const jobStatusStore = JobStatusStore.getInstance();
+  // Reset JobStatusStore singleton for test isolation (again, after DB is ready)
+  JobStatusStore.resetInstance();
+  const jobStatusStore = JobStatusStore.getInstance(dbManager);
   await jobStatusStore.initialize();
-  
+  console.log('[DIAGNOSTIC] (worker setup) JobStatusStore instance ID:', jobStatusStore.getInstanceId());
+  console.log('[DIAGNOSTIC] (worker setup) DatabaseManager instance ID:', dbManager.getInstanceId());
   const jobQueue = new JobQueue();
   const cacheManager = new CacheManager();
-  const categorizationEngine = new CategorizationEngine(dbManager, cacheManager);
+  const userDbManagerFactory = UserDatabaseManagerFactory.getInstance();
+  const categorizationEngine = new CategorizationEngine(userDbManagerFactory, cacheManager);
   const worker = new CategorizationWorker(jobQueue, categorizationEngine);
-  
   return {
     worker,
     jobQueue,
@@ -896,4 +1035,31 @@ export async function createWorkerWithRealComponents(): Promise<{
     dbManager,
     cacheManager
   };
+}
+
+// Enhanced cleanup: remove all created user DBs
+export async function cleanupAllUserTestDatabases() {
+  for (const dbDir of createdUserDbPaths) {
+    try {
+      await fsPromises.rm(dbDir, { recursive: true, force: true });
+    } catch (e) {
+      // Ignore errors
+    }
+  }
+  createdUserDbPaths.clear();
+  userDbPathMap.clear();
+}
+
+// Remove the entire directory where user DBs are created
+export async function cleanupAllUserDbDirectories() {
+  // Get the base path from the registry singleton
+  const registry = DatabaseRegistry.getInstance();
+  // Try to get the base path from the registry, fallback to env or default
+  const basePath = (registry as any).dbBasePath || process.env.STORAGE_PATH || './data/db';
+  try {
+    await fsPromises.rm(basePath, { recursive: true, force: true });
+    console.log(`[DIAGNOSTIC] Cleaned up all user DB directories at: ${basePath}`);
+  } catch (e) {
+    console.warn(`[DIAGNOSTIC] Failed to cleanup user DB directories at: ${basePath}`, e);
+  }
 }

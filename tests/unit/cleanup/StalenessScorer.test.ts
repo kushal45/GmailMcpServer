@@ -343,7 +343,7 @@ describe('StalenessScorer', () => {
         id: 'spam-email',
         date: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
         size: 1024,
-        spamScore: 0.9,
+        spam_score: 0.9,
         gmailCategory: 'spam',
         subject: 'Spam Email',
         sender: 'spam@example.com'
@@ -353,7 +353,7 @@ describe('StalenessScorer', () => {
         id: 'normal-email',
         date: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
         size: 1024,
-        spamScore: 0.1,
+        spam_score: 0.1,
         subject: 'Normal Email',
         sender: 'normal@example.com'
       };
@@ -371,7 +371,7 @@ describe('StalenessScorer', () => {
         id: 'promo-email',
         date: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
         size: 1024,
-        promotionalScore: 0.8,
+        promotional_score: 0.8,
         gmailCategory: 'promotions',
         subject: 'Promotional Email',
         sender: 'promo@example.com'
@@ -553,7 +553,7 @@ describe('StalenessScorer', () => {
         size: 50 * 1024 * 1024, // Very large
         category: 'high',
         importanceLevel: 'high',
-        spamScore: 0.8, // Even if it looks like spam
+        spam_score: 0.8, // Even if it looks like spam
         subject: 'High Importance Email',
         sender: 'important@example.com'
       };
@@ -571,7 +571,7 @@ describe('StalenessScorer', () => {
         date: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000), // 3 days ago
         size: 50 * 1024 * 1024, // Large
         category: 'low',
-        spamScore: 0.9, // High spam score
+        spam_score: 0.9, // High spam score
         subject: 'Recent Email',
         sender: 'recent@example.com'
       };
@@ -590,7 +590,7 @@ describe('StalenessScorer', () => {
         size: 100 * 1024 * 1024, // Very large
         category: 'low',
         importanceLevel: 'low',
-        spamScore: 0.9,
+        spam_score: 0.9,
         gmailCategory: 'spam',
         subject: 'Very Stale Email',
         sender: 'stale@example.com'
@@ -666,8 +666,8 @@ describe('StalenessScorer', () => {
         importanceLevel: 'medium',
         importanceScore: 5,
         importanceMatchedRules: ['rule1', 'rule2'],
-        spamScore: 0.3,
-        promotionalScore: 0.2,
+        spam_score: 0.3,
+        promotional_score: 0.2,
         gmailCategory: 'primary',
         spamIndicators: ['suspicious_links'],
         promotionalIndicators: ['unsubscribe_link'],

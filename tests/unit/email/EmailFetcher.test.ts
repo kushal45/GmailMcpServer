@@ -9,10 +9,6 @@ import {
 import { EmailFetcher } from "../../../src/email/EmailFetcher.js";
 import { EmailIndex, PriorityCategory } from "../../../src/types/index.js";
 
- import { createMockDatabase } from '../../utils/testHelpers';
-
-// Mock dependencies
-
 describe("EmailFetcher", () => {
   let emailFetcher: EmailFetcher;
   let mockDbManager: any;
@@ -23,9 +19,20 @@ describe("EmailFetcher", () => {
   beforeEach(() => {
     // Use helper to create properly typed mock database manager
    
-    mockDbManager = createMockDatabase();
+    mockDbManager = {};
+    // Ensure all DB methods used in EmailFetcher are mocked
+    mockDbManager.searchEmails = jest.fn();
+    mockDbManager.getEmailCount = jest.fn();
+    mockDbManager.upsertEmailIndex = jest.fn();
+
+    const mockUserDbManagerFactory = {
+      getUserDatabaseManager: jest.fn().mockImplementation(() => {
+         return Promise.resolve(mockDbManager);
+      })
+    };
     mockAuthManager = {
       getGmailClient: jest.fn(),
+      getSessionId: jest.fn().mockReturnValue('test-session-123'),
     };
     mockCacheManager = {
       get: jest.fn(),
@@ -47,7 +54,7 @@ describe("EmailFetcher", () => {
 
     // Create EmailFetcher instance with mocks
     emailFetcher = new EmailFetcher(
-      mockDbManager,
+      mockUserDbManagerFactory as any,
       mockAuthManager,
       mockCacheManager
     );
@@ -70,12 +77,11 @@ describe("EmailFetcher", () => {
         total: 2,
         timestamp: Date.now(), // Fresh timestamp
       });
-
       // Call listEmails
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toEqual(cachedEmails);
@@ -101,7 +107,7 @@ describe("EmailFetcher", () => {
         category: PriorityCategory.HIGH,
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toEqual(dbEmails);
@@ -158,7 +164,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toHaveLength(1);
@@ -175,8 +181,17 @@ describe("EmailFetcher", () => {
       // Verify last sync time was updated
       expect(mockCacheManager.set).toHaveBeenCalledWith(
         "last_gmail_sync",
-        expect.any(Number),
         expect.any(Number)
+      );
+      // Optionally, check that the cache for emails was set
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        expect.stringContaining("list_emails_"),
+        expect.objectContaining({
+          emails: expect.any(Array),
+          timestamp: expect.any(Number),
+          total: expect.any(Number),
+        }),
+        'test-user-123'
       );
     });
 
@@ -188,7 +203,7 @@ describe("EmailFetcher", () => {
         emailFetcher.listEmails({
           limit: 10,
           offset: 0,
-        })
+        }, 'test-user-123')
       ).rejects.toThrow("Database error");
     });
 
@@ -207,7 +222,7 @@ describe("EmailFetcher", () => {
         emailFetcher.listEmails({
           limit: 10,
           offset: 0,
-        })
+        }, 'test-user-123')
       ).rejects.toThrow("API error");
     });
 
@@ -225,7 +240,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results are empty but valid
       expect(result.emails).toEqual([]);
@@ -278,7 +293,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify results
       expect(result.emails).toHaveLength(1);
@@ -307,7 +322,7 @@ describe("EmailFetcher", () => {
         query: "subject:test",
         limit: 20,
         offset: 10,
-      });
+      }, 'test-user-123');
 
       // Verify database was queried with all filters
       expect(mockDbManager.searchEmails).toHaveBeenCalledWith(
@@ -347,7 +362,7 @@ describe("EmailFetcher", () => {
         query: "important",
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify Gmail API was called despite having database results
       expect(mockGmailClient.users.messages.list).toHaveBeenCalled();
@@ -371,7 +386,7 @@ describe("EmailFetcher", () => {
       const result = await emailFetcher.listEmails({
         limit: 10,
         offset: 0,
-      });
+      }, 'test-user-123');
 
       // Verify fresh results from database were returned, not stale cache
       expect(result.emails).toEqual(dbEmails);

@@ -57,7 +57,7 @@ describe('DatabaseManager', () => {
       return mockDb;
     });
 
-    dbManager = new DatabaseManager();
+    dbManager = new DatabaseManager(undefined);
     // Inject the mockDb into the dbManager instance for all tests
     (dbManager as any).db = mockDb;
   });
@@ -228,7 +228,7 @@ describe('DatabaseManager', () => {
         await dbManager.searchEmails({});
 
         expect(mockDb.all).toHaveBeenCalledWith(
-          expect.stringContaining('SELECT * FROM email_index'),
+         'SELECT *,COUNT(*) OVER () AS total_email_count FROM email_index WHERE 1=1 ORDER BY date DESC',
           [],
           expect.any(Function)
         );
@@ -276,7 +276,7 @@ describe('DatabaseManager', () => {
           callback(null, mockRows);
         });
 
-        const result = await dbManager.getArchiveRules();
+        const result = await dbManager.getArchiveRules(false, 'test-user-id');
 
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual(expect.objectContaining({
@@ -295,10 +295,10 @@ describe('DatabaseManager', () => {
           callback(null, []);
         });
 
-        await dbManager.getArchiveRules(true);
+        await dbManager.getArchiveRules(true, 'test-user-id');
 
         const sqlCall = mockDb.all.mock.calls[0][0];
-        expect(sqlCall).toContain('WHERE enabled = 1');
+        expect(sqlCall).toContain('enabled = 1');
       });
     });
 
