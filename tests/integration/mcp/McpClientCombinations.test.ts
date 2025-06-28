@@ -13,7 +13,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import Ajv from "ajv";
 import path from "path";
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
 import { initializeTestEnvironment, type TestEnvironmentConfig } from './test-env-loader.js';
 import { performOAuthAuthentication } from './oauth-utils.js';
 import { registerUser } from './userRegistration-utils.js';
@@ -67,7 +66,7 @@ describe("Gmail MCP Server - All MCP Tool Combinations", () => {
       // Initialize MCP client
       transport = new StdioClientTransport({
         command: "node",
-        args: ["./build/index.js"], // Removed --inspect-brk to avoid debugger handles
+        args: ["--inspect-brk","./build/index.js"], // Removed --inspect-brk to avoid debugger handles
       });
       client = new Client({
         name: "gmail-mcp-server",
@@ -292,7 +291,6 @@ describe("Gmail MCP Server - All MCP Tool Combinations", () => {
       arguments: {
         email: testEnv.primaryUser.email,
         display_name: testEnv.primaryUser.displayName,
-        session_id: "sess1",
       },
     });
     const content = (resp as any).content[0].text;
@@ -301,6 +299,8 @@ describe("Gmail MCP Server - All MCP Tool Combinations", () => {
     expect(validateAuthenticate(contentObj)).toBe(true);
     expect(contentObj.success).toBe(true);
     const authUrl = contentObj.authUrl;
+    const state = contentObj.state;
+    expect(state).toBeDefined();
 
     // Get test credentials from environment variables (use same email as registration)
     const testEmail = testEnv.primaryUser.email;
@@ -324,7 +324,29 @@ describe("Gmail MCP Server - All MCP Tool Combinations", () => {
         useAppPassword: useAppPassword
       });
 
-      console.info("✅ Successfully extracted user context:", userContext);
+      // --- POLL FOR USER CONTEXT POST performOAuthAuthentication ---
+      if (state) {
+        let pollUserContextResp, pollUserContextObj;
+        for (let i = 0; i < 5; i++) {
+          pollUserContextResp = await client.callTool({
+            name: "poll_user_context",
+            arguments: { state },
+          });
+          pollUserContextObj = JSON.parse((pollUserContextResp as any).content[0].text);
+          if (pollUserContextObj.status === "success") {
+            break;
+          }
+          // Wait before polling again
+          await new Promise((res) => setTimeout(res, 500));
+        }
+        expect(pollUserContextObj.status).toBe("success");
+        expect(pollUserContextObj.userContext).toHaveProperty("user_id");
+        expect(pollUserContextObj.userContext).toHaveProperty("session_id");
+        // Optionally, check that the userContext matches what was returned by performOAuthAuthentication
+        expect(userContext.user_id).toBe(pollUserContextObj.userContext.user_id);
+        expect(userContext.session_id).toBe(pollUserContextObj.userContext.session_id);
+        console.info("✅ (Post-performOAuthAuthentication) Successfully fetched user context via poll_user_context:", pollUserContextObj.userContext);
+      }
 
     } catch (error) {
       console.error("OAuth automation failed:", error);

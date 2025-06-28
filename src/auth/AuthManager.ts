@@ -28,7 +28,7 @@ const TOKEN_PATH = path.join(__dirname, '../../token.json');
 const CREDENTIALS_PATH = path.join(__dirname, '../../credentials.json');
 
 // Paths for multi-user storage
-const DEFAULT_STORAGE_PATH = path.join(__dirname, '../../data');
+const DEFAULT_STORAGE_PATH = path.resolve(__dirname, '../../data');
 
 /**
  * AuthManager class for handling OAuth authentication with Google APIs
@@ -41,6 +41,10 @@ export class AuthManager {
   private multiUserMode: boolean = false;
   private activeAuthSessions: Map<string, { sessionId: string, userId: string }> = new Map();
   private pendingAuthRequests: Map<string, { resolve: (sessionId: string) => void, reject: (error: Error) => void }> = new Map();
+  private pendingUserContextRequests: Map<string, { resolve: (userContext: { user_id: string; session_id: string }) => void, reject: (error: Error) => void }> = new Map();
+  private completedUserContexts: Map<string, { user_id: string; session_id: string; timestamp: number }> = new Map();
+  private completedUserContextsCleanupInterval: NodeJS.Timeout | null = null;
+  private static readonly USER_CONTEXT_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
 
   /**
    * Create a new AuthManager instance
@@ -54,6 +58,15 @@ export class AuthManager {
     } = {}
   ) {
     this.multiUserMode = options.enableMultiUser || false;
+    // Start periodic cleanup for completedUserContexts
+    this.completedUserContextsCleanupInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [state, entry] of this.completedUserContexts.entries()) {
+        if (now - entry.timestamp > AuthManager.USER_CONTEXT_EXPIRY_MS) {
+          this.completedUserContexts.delete(state);
+        }
+      }
+    }, 60 * 1000); // Run every 1 minute
   }
 
   /**
@@ -80,7 +93,7 @@ export class AuthManager {
    * Initialize in multi-user mode
    */
   private async initializeMultiUser(): Promise<void> {
-    const storagePath = this.options.storagePath || process.env.STORAGE_PATH || DEFAULT_STORAGE_PATH;
+    const storagePath = this.options.storagePath || (process.env.STORAGE_PATH ? path.resolve(__dirname, '../../', process.env.STORAGE_PATH) : DEFAULT_STORAGE_PATH);
     
     // Initialize UserManager
     this.userManager = UserManager.getInstance();
@@ -353,12 +366,10 @@ export class AuthManager {
       additionalScopes?: string[];
       sessionId?: string;
     } = {}
-  ): Promise<string> {
+  ): Promise<string | { authUrl: string, state: string }> {
     if (this.multiUserMode) {
-      // Multi-user mode
       return this.getAuthUrlMultiUser(options);
     } else {
-      // Legacy single-user mode
       return this.getAuthUrlSingleUser(options.additionalScopes || []);
     }
   }
@@ -373,7 +384,7 @@ export class AuthManager {
       additionalScopes?: string[];
       sessionId?: string;
     }
-  ): Promise<string> {
+  ): Promise<{ authUrl: string, state: string }> {
     if (!this.userManager) {
       throw new Error('UserManager not initialized');
     }
@@ -401,11 +412,15 @@ export class AuthManager {
     const stateParam = crypto.randomUUID();
     
     // Create a promise that will be resolved when auth is complete
-    const authPromise = new Promise<string>((resolve, reject) => {
-      this.pendingAuthRequests.set(stateParam, { resolve, reject });
+    const authPromise = new Promise<{ user_id: string; session_id: string }>((resolve, reject) => {
+      this.pendingUserContextRequests.set(stateParam, { resolve, reject });
     });
-    authPromise.then((sessionId) => {
-      logger.info(`Authentication successful for user ${options.email} with sessionId ${sessionId}`);
+    authPromise.then((result) => {
+      if (typeof result === 'string') {
+        logger.info(`Authentication successful for user ${options.email} with sessionId ${result}`);
+      } else {
+        logger.info(`Authentication successful for user ${options.email} with user_id ${result.user_id} and session_id ${result.session_id}`);
+      }
     });
     
     // Generate auth URL with state parameter
@@ -427,7 +442,7 @@ export class AuthManager {
     // Start local server to handle callback
     await this.startAuthServer();
 
-    return authUrl;
+    return { authUrl, state: stateParam };
   }
 
   /**
@@ -468,14 +483,19 @@ export class AuthManager {
           const code = url.searchParams.get('code');
           const state = url.searchParams.get('state');
           // Only process if code and state are present and state is pending
-          if (code && state && this.pendingAuthRequests.has(state)) {
+          if (code && state) {
             try {
-              if (this.multiUserMode && state) {
+              if (this.multiUserMode && this.pendingUserContextRequests.has(state)) {
                 // Multi-user mode
                 await this.handleMultiUserCallback(code, state, res);
-              } else {
+              } else if (this.pendingAuthRequests.has(state)) {
                 // Legacy single-user mode
                 await this.handleSingleUserCallback(code, res);
+              } else {
+                // No pending request for this state
+                res.writeHead(400, { 'Content-Type': 'text/html' });
+                res.end(`<html><body><h1>Authentication Failed</h1><p>Invalid or expired state parameter.</p></body></html>`);
+                return;
               }
             } catch (error) {
               logger.error('Error processing OAuth callback:', error);
@@ -488,9 +508,13 @@ export class AuthManager {
                   </body>
                 </html>
               `);
-              
               // Reject any pending promise
-              if (state && this.pendingAuthRequests.has(state)) {
+              if (this.multiUserMode && state && this.pendingUserContextRequests.has(state)) {
+                this.pendingUserContextRequests.get(state)!.reject(
+                  error instanceof Error ? error : new Error('Unknown error during authentication')
+                );
+                this.pendingUserContextRequests.delete(state);
+              } else if (state && this.pendingAuthRequests.has(state)) {
                 this.pendingAuthRequests.get(state)!.reject(
                   error instanceof Error ? error : new Error('Unknown error during authentication')
                 );
@@ -507,9 +531,13 @@ export class AuthManager {
                 </body>
               </html>
             `);
-            
             // Reject any pending promise
-            if (state && this.pendingAuthRequests.has(state)) {
+            if (this.multiUserMode && state && this.pendingUserContextRequests.has(state)) {
+              this.pendingUserContextRequests.get(state)!.reject(
+                new Error('No authorization code received')
+              );
+              this.pendingUserContextRequests.delete(state);
+            } else if (state && this.pendingAuthRequests.has(state)) {
               this.pendingAuthRequests.get(state)!.reject(
                 new Error('No authorization code received')
               );
@@ -611,10 +639,16 @@ export class AuthManager {
       this.authServer = null;
     }
     
-    // Resolve the pending promise
-    if (this.pendingAuthRequests.has(state)) {
-      this.pendingAuthRequests.get(state)!.resolve(session.getSessionData().sessionId);
-      this.pendingAuthRequests.delete(state);
+    // After resolving the promise, store the user context in completedUserContexts
+    if (this.pendingUserContextRequests.has(state)) {
+      const userContext = {
+        user_id: session.getSessionData().userId,
+        session_id: session.getSessionData().sessionId,
+        timestamp: Date.now()
+      };
+      this.pendingUserContextRequests.get(state)!.resolve({ user_id: userContext.user_id, session_id: userContext.session_id });
+      this.pendingUserContextRequests.delete(state);
+      this.completedUserContexts.set(state, userContext);
     }
     
     // Clean up auth session
@@ -787,39 +821,35 @@ export class AuthManager {
    */
   async authenticateUser(email: string, displayName?: string): Promise<string> {
     if (!this.multiUserMode) {
-      throw new Error('Not in multi-user mode');
+      // Legacy single-user mode
+      // Get auth URL
+      const authUrl = await this.getAuthUrl({ email, displayName });
+      logger.info(`Please visit this URL to authenticate: ${authUrl}`);
+      return new Promise<string>((resolve, reject) => {
+        // Timeout after 5 minutes
+        const timeout = setTimeout(() => {
+          reject(new Error('Authentication timed out'));
+        }, 5 * 60 * 1000);
+        // Wait for auth to complete
+        const stateParam = new URL(authUrl).searchParams.get('state');
+        if (stateParam) {
+          this.pendingAuthRequests.set(stateParam, {
+            resolve: (sessionId) => {
+              clearTimeout(timeout);
+              resolve(sessionId);
+            },
+            reject: (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            }
+          });
+        } else {
+          reject(new Error('Invalid auth URL'));
+        }
+      });
+    } else {
+      throw new Error('authenticateUser is not supported in multi-user mode. Use the tool handler flow.');
     }
-    
-    // Get auth URL
-    const authUrl = await this.getAuthUrl({ email, displayName });
-    
-    // Log the URL for the user to visit
-    logger.info(`Please visit this URL to authenticate: ${authUrl}`);
-    
-    // This will be resolved when auth is complete
-    return new Promise<string>((resolve, reject) => {
-      // Timeout after 5 minutes
-      const timeout = setTimeout(() => {
-        reject(new Error('Authentication timed out'));
-      }, 5 * 60 * 1000);
-      
-      // Wait for auth to complete
-      const stateParam = new URL(authUrl).searchParams.get('state');
-      if (stateParam) {
-        this.pendingAuthRequests.set(stateParam, {
-          resolve: (sessionId) => {
-            clearTimeout(timeout);
-            resolve(sessionId);
-          },
-          reject: (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          }
-        });
-      } else {
-        reject(new Error('Invalid auth URL'));
-      }
-    });
   }
 
   /**
@@ -898,6 +928,11 @@ export class AuthManager {
     // Clean up any other resources
     if (this.multiUserMode && this.userManager) {
       this.userManager.cleanupExpiredSessions();
+    }
+
+    if (this.completedUserContextsCleanupInterval) {
+      clearInterval(this.completedUserContextsCleanupInterval);
+      this.completedUserContextsCleanupInterval = null;
     }
   }
 }

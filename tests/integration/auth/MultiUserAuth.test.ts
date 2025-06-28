@@ -9,6 +9,9 @@ import {
 
 // Import types for proper typing
 import { UserProfile } from '../../../src/types/index.js';
+import { handleToolCall } from '../../../src/tools/handler.js';
+import { AuthManager } from '../../../src/auth/AuthManager.js';
+import { UserManager } from '../../../src/auth/UserManager.js';
 
 describe('Multi-User Authentication Integration Tests', () => {
   // Test constants
@@ -403,5 +406,89 @@ describe('Multi-User Authentication Integration Tests', () => {
       
       expect(mockListEmails).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe('Multi-User OAuth End-to-End Flow', () => {
+  let authManager: AuthManager;
+  let userManager: UserManager;
+  let toolContext: any;
+  let getAuthUrlSpy: jest.MockedFunction<any>;
+  let startAuthServerSpy: jest.MockedFunction<any>;
+
+  beforeEach(async () => {
+    authManager = new AuthManager({ enableMultiUser: true });
+    userManager = UserManager.getInstance();
+    await authManager.initialize();
+    await userManager.initialize();
+    toolContext = {
+      authManager,
+      userManager,
+      // Add other required managers as mocks or real instances as needed
+    };
+    // Mock getAuthUrl to return a dummy authUrl and state, and set up pendingUserContextRequests
+    getAuthUrlSpy = jest.spyOn(authManager, 'getAuthUrl').mockImplementation(async () => {
+      const state = 'dummy-state';
+      // Simulate the real behavior: set up a pending promise for the state
+      (authManager as any).pendingUserContextRequests.set(state, {
+        resolve: () => {},
+        reject: () => {}
+      });
+      return { authUrl: 'https://dummy-auth-url.com', state };
+    });
+    // Mock startAuthServer to be a no-op
+    startAuthServerSpy = jest.spyOn(authManager as any, 'startAuthServer').mockImplementation(async () => {});
+  });
+
+  afterEach(async () => {
+    getAuthUrlSpy.mockRestore();
+    startAuthServerSpy.mockRestore();
+    await authManager.cleanup();
+  });
+
+  it('should return authUrl and state from authenticate tool', async () => {
+    const result = await handleToolCall('authenticate', { scopes: [] }, toolContext);
+    const response = JSON.parse(result.content[0].text);
+    expect(response.success).toBe(true);
+    expect(response.authUrl).toMatch(/^https?:\/\//);
+    expect(typeof response.state).toBe('string');
+    expect(response.state.length).toBeGreaterThan(0);
+  });
+
+  it('should allow polling for user context after OAuth completion', async () => {
+    // Step 1: Call authenticate
+    const result = await handleToolCall('authenticate', { scopes: [] }, toolContext);
+    const response = JSON.parse(result.content[0].text);
+    const { state } = response;
+    expect(state).toBeDefined();
+
+    // Step 2: Simulate OAuth callback (normally done by Google)
+    // We'll directly resolve the pendingUserContextRequests for this test
+    const userId = 'test-user-id';
+    const sessionId = 'test-session-id';
+    const pendingMap = (authManager as any).pendingUserContextRequests as Map<string, { resolve: (userContext: { user_id: string; session_id: string }) => void, reject: (error: Error) => void }>;
+    const pending = pendingMap.get(state);
+    expect(pending).toBeDefined();
+    pending!.resolve({ user_id: userId, session_id: sessionId });
+    // Simulate the real flow: set completedUserContexts for the state
+    const completedMap = (authManager as any).completedUserContexts as Map<string, { user_id: string; session_id: string; timestamp: number }>;
+    completedMap.set(state, { user_id: userId, session_id: sessionId, timestamp: Date.now() });
+
+    // Step 3: Poll for user context
+    const pollResult = await handleToolCall('poll_user_context', { state }, toolContext);
+    const pollResponse = JSON.parse(pollResult.content[0].text);
+    expect(pollResponse.status).toBe('success');
+    expect(pollResponse.userContext).toEqual(expect.objectContaining({ user_id: userId, session_id: sessionId }));
+  });
+
+  it('should return pending if user context is not ready', async () => {
+    const result = await handleToolCall('authenticate', { scopes: [] }, toolContext);
+    const response = JSON.parse(result.content[0].text);
+    const { state } = response;
+    // Do not resolve the pending promise
+    const pollResult = await handleToolCall('poll_user_context', { state }, toolContext);
+    const pollResponse = JSON.parse(pollResult.content[0].text);
+    // Should be pending (after timeout)
+    expect(['pending', 'not_found']).toContain(pollResponse.status);
   });
 });

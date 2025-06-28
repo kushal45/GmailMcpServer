@@ -2680,7 +2680,7 @@ async function validateOAuthFlow() {
     console.log('📡 Connecting to MCP server...');
     const transport = new StdioClientTransport({
       command: "node",
-      args: ["./build/index.js"],
+      args: ["--inspect-brk","./build/index.js"],
     });
     
     client = new Client({

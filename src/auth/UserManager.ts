@@ -5,6 +5,10 @@ import { logger } from '../utils/logger.js';
 import { UserProfile, UserSession as UserSessionType } from '../types/index.js';
 import { UserSession } from './UserSession.js';
 import { OAuth2Client } from 'google-auth-library';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * UserManager class responsible for managing user profiles and authentication state
@@ -22,7 +26,7 @@ export class UserManager {
    * @param encryptionKey Optional encryption key for token storage
    */
   constructor(
-    private storagePath: string = process.env.STORAGE_PATH || './data',
+    private storagePath: string = path.resolve(__dirname, '../../', process.env.STORAGE_PATH || 'data'),
     encryptionKey?: string
   ) {
     this.userProfilesPath = path.join(this.storagePath, 'users');

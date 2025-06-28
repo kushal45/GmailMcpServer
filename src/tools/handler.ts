@@ -13,6 +13,7 @@ import { JobStatusStore } from '../database/JobStatusStore.js';
 import { JobQueue } from '../database/JobQueue.js';
 import { CategorizationEngine } from '../categorization/CategorizationEngine.js';
 import { JobStatus } from '../types/index.js';
+import { UserDatabaseManagerFactory } from '../database/UserDatabaseManagerFactory.js';
 
 // Interface for user context
 export interface UserContext {
@@ -44,15 +45,16 @@ export async function handleToolCall(
   logger.info(`Handling tool call: ${toolName}`, { args });
 
   try {
-    // Validate user context for all tools except authenticate
-    // This allows new users to authenticate first
-    if (!toolNamesNotRequiringAuth.includes(toolName)) {
+    // Validate user context for all tools except authenticate and poll_user_context
+    if (!toolNamesNotRequiringAuth.includes(toolName) && toolName !== 'poll_user_context') {
       await validateUserContext(args, context);
     }
     
     switch (toolName) {
       case 'authenticate':
         return await handleAuthenticate(args, context);
+      case 'poll_user_context':
+        return await handlePollUserContext(args, context);
       
       case 'list_emails':
         return await handleListEmails(args, context);
@@ -165,15 +167,25 @@ export async function handleToolCall(
 
 async function handleAuthenticate(args: any, context: ToolContext) {
   const scopes = args.scopes || [];
-  const authUrl = await context.authManager.getAuthUrl(scopes);
-  
+  const result = await context.authManager.getAuthUrl(scopes);
+
+  let authUrl: string;
+  let state: string | undefined;
+  if (typeof result === 'string') {
+    authUrl = result;
+  } else {
+    authUrl = result.authUrl;
+    state = result.state;
+  }
+
   return {
     content: [{
       type: 'text',
       text: JSON.stringify({
         success: true,
         authUrl,
-        instructions: 'Please visit the URL to authenticate. After authentication, the server will automatically detect and store your credentials.'
+        state,
+        instructions: 'Please visit the URL to authenticate. After authentication, poll with the state to get your user context.'
       }, null, 2)
     }]
   };
@@ -489,7 +501,11 @@ async function handleGetJobStatus(args: any, context: ToolContext) {
 
   let emailList = null;
   if (jobStatus.status === JobStatus.COMPLETED && jobStatus.results?.emailIds) {
-    emailList = await context.databaseManager.getEmailsByIds(jobStatus.results.emailIds);
+    if(!jobStatus.user_id) {
+      throw new McpError(ErrorCode.InvalidRequest, `Job ${jobId} does not have a user_id`);
+    }
+    const userDbManager = await UserDatabaseManagerFactory.getInstance().getUserDatabaseManager(jobStatus.user_id);
+    emailList = await userDbManager.getEmailsByIds(jobStatus.results.emailIds);
   }
 
   return {
@@ -741,14 +757,19 @@ async function handleGetEmailDetails(args: any, context: ToolContext) {
   if (!await context.authManager.hasValidAuth(args?.user_context?.session_id)) {
     throw new McpError(ErrorCode.InvalidRequest, 'Not authenticated. Please use the authenticate tool first.');
   }
+  const userContext = args.user_context as UserContext;
+  const userId = userContext.user_id;
+  if(!userId) {
+    throw new McpError(ErrorCode.InvalidRequest, 'User ID is required in fetching email details');
+  }
 
   const emailId = args.id;
 
   if (!emailId) {
     throw new McpError(ErrorCode.InvalidParams, 'emailId is required');
   }
-
-  const email = await context.databaseManager.getEmailIndex(emailId);
+  const userDbManager = await UserDatabaseManagerFactory.getInstance().getUserDatabaseManager(userId);
+  const email = await userDbManager.getEmailIndex(emailId);
 
   if (!email) {
     throw new McpError(ErrorCode.InvalidRequest, `Email ${emailId} not found`);
@@ -1030,4 +1051,77 @@ async function handleListUsers(args: any, context: ToolContext): Promise<{ conte
       `Failed to list users: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+async function handlePollUserContext(args: any, context: ToolContext): Promise<{ content: { type: string; text: string }[] }> {
+  const { state } = args;
+  if (!state) {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ status: 'error', error: 'Missing state parameter' }, null, 2)
+      }]
+    };
+  }
+  const completedMap = (context.authManager as any).completedUserContexts as Map<string, { user_id: string; session_id: string }>;
+  if (completedMap && completedMap.has(state)) {
+    const userContext = completedMap.get(state);
+    // Optionally: completedMap.delete(state); // Uncomment for one-time retrieval
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ status: 'success', userContext }, null, 2)
+      }]
+    };
+  }
+  const pendingMap = (context.authManager as any).pendingUserContextRequests as Map<string, { resolve: (userContext: { user_id: string; session_id: string }) => void, reject: (error: Error) => void }>;
+  if (!pendingMap) {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ status: 'error', error: 'Server misconfiguration' }, null, 2)
+      }]
+    };
+  }
+  return new Promise<{ content: { type: string; text: string }[] }>((resolve) => {
+    const pending = pendingMap.get(state);
+    if (!pending) {
+      resolve({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ status: 'not_found' }, null, 2)
+        }]
+      });
+      return;
+    }
+    // Wait for the promise to resolve (with a timeout)
+    const timeout = setTimeout(() => {
+      resolve({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ status: 'pending' }, null, 2)
+        }]
+      });
+    }, 10000);
+    pendingMap.set(state, {
+      resolve: (user_context) => {
+        clearTimeout(timeout);
+        resolve({
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ status: 'success', userContext: user_context }, null, 2)
+          }]
+        });
+      },
+      reject: (err) => {
+        clearTimeout(timeout);
+        resolve({
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ status: 'error', error: err.message }, null, 2)
+          }]
+        });
+      }
+    });
+  });
 }

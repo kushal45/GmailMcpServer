@@ -131,6 +131,7 @@ export class CategorizationWorker {
               processed: categorizationResult.processed,
               categorized: categorizationResult.categories,
               emailIds,
+              userId
             }
           }
         );

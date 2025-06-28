@@ -11,6 +11,7 @@ import {
   SearchEngineCriteria,
   Job,
 } from "../types/index.js";
+import { fileURLToPath } from 'url';
 
 interface RunResult {
   lastID?: number; // For INSERT statements
@@ -35,13 +36,15 @@ export class DatabaseManager {
     this.userId = userId;
     
     // Determine the project root directory using Node.js compatible approach
-    // Since we know this file is in src/database, we can navigate up from current working directory
-    const projectRoot = process.cwd();
+    // Since we know this file is in src/database, we can navigate up from current file location
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const projectRoot = path.resolve(__dirname, '../../');
 
     // Always resolve storage path relative to project root, not cwd or absolute
-    const storagePath = path.isAbsolute(process.env.STORAGE_PATH ?? "")
-      ? process.env.STORAGE_PATH ?? ""
-      : path.join(projectRoot, process.env.STORAGE_PATH ?? "data");
+    const storagePath = process.env.STORAGE_PATH
+      ? path.resolve(projectRoot, process.env.STORAGE_PATH)
+      : path.join(projectRoot, 'data');
     
     // In multi-user mode, the dbPath will be set during initialization
     // For backward compatibility with single-user mode, set a default path
@@ -51,7 +54,7 @@ export class DatabaseManager {
       this.dbPath = path.join(storagePath, "gmail-mcp.db");
     }
     // Diagnostic log for test isolation
-    console.log('[DIAGNOSTIC] DatabaseManager constructor:', {
+    console.error('[DIAGNOSTIC] DatabaseManager constructor:', {
       userId,
       storagePath,
       envStoragePath: process.env.STORAGE_PATH,

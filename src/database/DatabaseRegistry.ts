@@ -1,7 +1,11 @@
+import { fileURLToPath } from 'url';
 import path from "path";
 import fs from "fs/promises";
 import { logger } from "../utils/logger.js";
 import { DatabaseManager } from "./DatabaseManager.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * DatabaseRegistry class responsible for managing user-specific database connections
@@ -16,7 +20,7 @@ export class DatabaseRegistry {
    * Create a new DatabaseRegistry instance
    * @param basePath Base path for database storage
    */
-  constructor(basePath: string = process.env.STORAGE_PATH || "./data/db") {
+  constructor(basePath: string = process.env.STORAGE_PATH ? path.resolve(__dirname, '../../', process.env.STORAGE_PATH) : path.resolve(__dirname, '../../data/db')) {
     this.dbBasePath = basePath;
   }
 

@@ -25,6 +25,7 @@ import { setupFormatterRegistry } from "./archive/setupFormatters.js";
 import { FileAccessControlManager } from "./services/FileAccessControlManager.js";
 import { UserManager } from "./auth/UserManager.js";
 import { userDatabaseInitializer } from "./database/UserDatabaseInitializer.js";
+import { setupConnectionMonitoring, globalConnectionMonitor } from "./utils/ConnectionHealthMonitor.js";
 import { userDatabaseManagerFactory } from "./database/UserDatabaseManagerFactory.js";
 
 export class GmailMcpServer {
@@ -159,6 +160,11 @@ export class GmailMcpServer {
       logger.error("MCP Server error:", error);
     };
 
+    // Enhanced connection handling for SSE/transport stability
+    this.server.onclose = () => {
+      logger.info("MCP Server connection closed");
+    };
+
     process.on("unhandledRejection", (reason) => {
       logger.error(`Unhandled Rejection with reason : ${JSON.stringify(reason)}`);
     });
@@ -167,10 +173,24 @@ export class GmailMcpServer {
       logger.error("Uncaught Exception:", error);
       //process.exit(1);
     });
+
+    // Handle process termination more gracefully
+    process.on("beforeExit", (code) => {
+      logger.info(`Process beforeExit with code: ${code}`);
+    });
+
+    process.on("exit", (code) => {
+      logger.info(`Process exit with code: ${code}`);
+    });
   }
 
   async connect(transport: StdioServerTransport) {
     await this.initialize();
+
+    // Setup connection monitoring
+    setupConnectionMonitoring(this.server);
+    globalConnectionMonitor.onConnectionEstablished('stdio');
+
     await this.server.connect(transport);
     logger.debug("Gmail MCP server connected to transport");
   }
@@ -179,7 +199,7 @@ export class GmailMcpServer {
     try {
       // Initialize database
       await this.databaseManager.initialize().then(async () => {
-        this.categorizationWorker = new CategorizationWorker(
+       this.categorizationWorker = new CategorizationWorker(
           this.jobQueue,
           this.categorizationEngine
         );
@@ -232,6 +252,14 @@ export class GmailMcpServer {
       if (this.categorizationWorker) {
         this.categorizationWorker.stop();
         logger.info("Categorization worker stopped");
+      }
+
+      // Cleanup auth manager resources
+      try {
+        await this.authManager.cleanup();
+        logger.debug("Auth manager cleanup complete");
+      } catch (error) {
+        logger.error("Error during auth manager cleanup:", error);
       }
 
       // Shutdown cleanup automation engine

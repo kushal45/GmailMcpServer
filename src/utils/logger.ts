@@ -1,9 +1,14 @@
 import winston from 'winston';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Use Node.js compatible path resolution for logs directory
-const logsDir = path.join(process.cwd(), 'logs');
+const projectRoot = path.resolve(__dirname, '../../');
+const logsDir = path.join(projectRoot, 'logs');
 const userLogsDir = path.join(logsDir, 'users');
 
 try {
